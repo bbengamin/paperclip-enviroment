@@ -1,0 +1,20 @@
+services:
+  ubuntu-ssh:
+    build:
+      context: .
+    container_name: ubuntu-ssh
+    ports:
+      - "${HOST_BIND_IP}:2222:22"
+    environment:
+      SSH_USER: ${SSH_USER:-guest}
+      SSH_UID: ${SSH_UID:-1000}
+      SSH_GID: ${SSH_GID:-1000}
+      AUTHORIZED_KEYS_FILE: /run/authorized_keys
+    volumes:
+      - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
+      - .:/workspace:rw
+      - hostkeys:/hostkeys
+    restart: unless-stopped
+
+volumes:
+  hostkeys:
