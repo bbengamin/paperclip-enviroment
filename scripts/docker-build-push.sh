@@ -4,8 +4,7 @@ set -euo pipefail
 IMAGE_NAME="${IMAGE_NAME:-${1:-bbengamin/paperclip-enviroment}}"
 TAG="${TAG:-${2:-latest}}"
 PLATFORMS="${PLATFORMS:-linux/amd64,linux/arm64}"
-CACHE_DIR="${CACHE_DIR:-.buildx-cache}"
-CACHE_DIR_NEW="${CACHE_DIR}.new"
+CACHE_REF="${CACHE_REF:-${IMAGE_NAME}:buildcache}"
 
 if ! docker buildx version >/dev/null 2>&1; then
   echo "docker buildx is required" >&2
@@ -22,8 +21,6 @@ fi
 
 docker buildx inspect --bootstrap >/dev/null
 
-mkdir -p "$CACHE_DIR"
-
 BUILD_TAG_ARGS=(--tag "$IMAGE_NAME:$TAG")
 
 if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
@@ -37,15 +34,10 @@ if git rev-parse --short HEAD >/dev/null 2>&1; then
   fi
 fi
 
-rm -rf "$CACHE_DIR_NEW"
-
 docker buildx build \
   --platform "$PLATFORMS" \
-  --cache-from "type=local,src=$CACHE_DIR" \
-  --cache-to "type=local,dest=$CACHE_DIR_NEW,mode=max" \
+  --cache-from "type=registry,ref=$CACHE_REF" \
+  --cache-to "type=registry,ref=$CACHE_REF,mode=max" \
   "${BUILD_TAG_ARGS[@]}" \
   --push \
   .
-
-rm -rf "$CACHE_DIR"
-mv "$CACHE_DIR_NEW" "$CACHE_DIR"

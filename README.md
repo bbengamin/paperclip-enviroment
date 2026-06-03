@@ -108,7 +108,7 @@ Optional arguments:
 
 By default, the script pushes `bbengamin/paperclip-enviroment:latest`.
 If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are set, the script logs in before pushing.
-It uses `docker buildx build` by default, builds `linux/amd64` and `linux/arm64`, and reuses local cache from `.buildx-cache/` automatically.
+It uses `docker buildx build` by default, builds `linux/amd64` and `linux/arm64`, and reuses Docker registry cache from `bbengamin/paperclip-enviroment:buildcache` automatically.
 
 ### Docker Compose build vs pull
 
