@@ -6,6 +6,7 @@ SSH_UID="${SSH_UID:-1000}"
 SSH_GID="${SSH_GID:-1000}"
 AUTHORIZED_KEYS_FILE="${AUTHORIZED_KEYS_FILE:-/run/authorized_keys}"
 HOST_KEYS_DIR="${HOST_KEYS_DIR:-/hostkeys}"
+SSH_HOME="/home/${SSH_USER}"
 
 if [ ! -f "$AUTHORIZED_KEYS_FILE" ]; then
   echo "authorized keys file not found: $AUTHORIZED_KEYS_FILE" >&2
@@ -24,8 +25,11 @@ fi
 # password hash so OpenSSH will allow key-based logins while password auth stays off.
 usermod -p "$(openssl passwd -6 disabled-login)" "$SSH_USER"
 
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "/home/$SSH_USER/.ssh"
-install -m 600 -o "$SSH_USER" -g "$SSH_GID" "$AUTHORIZED_KEYS_FILE" "/home/$SSH_USER/.ssh/authorized_keys"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.ssh"
+install -m 600 -o "$SSH_USER" -g "$SSH_GID" "$AUTHORIZED_KEYS_FILE" "$SSH_HOME/.ssh/authorized_keys"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.claude"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.codex"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.config/opencode"
 
 mkdir -p "$HOST_KEYS_DIR"
 chmod 700 "$HOST_KEYS_DIR"

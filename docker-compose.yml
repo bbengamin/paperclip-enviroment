@@ -15,7 +15,13 @@ services:
       - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
       - .:/workspace:rw
       - hostkeys:/hostkeys
+      - claude:/home/${SSH_USER:-guest}/.claude
+      - codex:/home/${SSH_USER:-guest}/.codex
+      - opencode:/home/${SSH_USER:-guest}/.config/opencode
     restart: unless-stopped
 
 volumes:
   hostkeys:
+  claude:
+  codex:
+  opencode:

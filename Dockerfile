@@ -8,12 +8,12 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        nano \
         npm \
         openssh-server \
         ripgrep \
         xz-utils \
     && npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai \
-    && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup --skip-browser \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd
 
