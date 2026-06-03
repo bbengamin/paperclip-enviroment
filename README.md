@@ -85,6 +85,13 @@ The workflow publishes:
 - a short `sha-...` tag on each build
 - the git tag itself for `v*` releases
 
+The GitHub Action builds multi-arch Linux images for:
+
+- `linux/amd64`
+- `linux/arm64`
+
+It uses the GitHub Actions cache backend for Docker layer reuse between runs.
+
 ### Backup shell script
 
 For manual publishing, use `scripts/docker-build-push.sh`:
@@ -101,6 +108,7 @@ Optional arguments:
 
 By default, the script pushes `bbengamin/paperclip-enviroment:latest`.
 If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are set, the script logs in before pushing.
+It uses `docker buildx build` by default, builds `linux/amd64` and `linux/arm64`, and reuses local cache from `.buildx-cache/` automatically.
 
 ### Docker Compose build vs pull
 
