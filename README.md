@@ -21,6 +21,13 @@ This container gives remote users shell access to an Ubuntu 24.04 container on t
 docker compose up -d --build
 ```
 
+To use a published Docker Hub image instead of building locally:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
 ## Connect from another machine
 
 Use this machine's Tailscale IP or MagicDNS name:
@@ -54,3 +61,62 @@ Put one or more public keys in that file, one key per line, or change the path i
 
 - The SSH access is to the container, not the macOS host.
 - The repo is mounted read-write at `/workspace`.
+
+## Docker Hub publishing
+
+### GitHub Actions
+
+The repo includes `.github/workflows/docker-publish.yml` to build and push the image to Docker Hub on:
+
+- pushes to `main`
+- version tags matching `v*`
+- manual runs from `workflow_dispatch`
+
+Configure these GitHub settings before using it:
+
+- repository secret `DOCKERHUB_USERNAME`
+- repository secret `DOCKERHUB_TOKEN`
+
+The Docker image name is fixed as `bbengamin/paperclip-enviroment`.
+
+The workflow publishes:
+
+- `latest` on `main`
+- a short `sha-...` tag on each build
+- the git tag itself for `v*` releases
+
+### Backup shell script
+
+For manual publishing, use `scripts/docker-build-push.sh`:
+
+```bash
+./scripts/docker-build-push.sh
+```
+
+Optional arguments:
+
+```bash
+./scripts/docker-build-push.sh bbengamin/paperclip-enviroment custom-tag
+```
+
+By default, the script pushes `bbengamin/paperclip-enviroment:latest`.
+If `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are set, the script logs in before pushing.
+
+### Docker Compose build vs pull
+
+`docker-compose.yml` supports both local builds and the published Docker Hub image:
+
+- local build: `docker compose up -d --build`
+- pull published image: `docker compose pull && docker compose up -d`
+
+The defaults come from `.env`:
+
+- `DOCKER_IMAGE=bbengamin/paperclip-enviroment`
+- `DOCKER_TAG=latest`
+
+You can override the tag when needed, for example:
+
+```bash
+DOCKER_TAG=sha-abcdef1 docker compose pull
+DOCKER_TAG=sha-abcdef1 docker compose up -d
+```

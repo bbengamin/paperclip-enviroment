@@ -1,5 +1,6 @@
 services:
   ubuntu-ssh:
+    image: ${DOCKER_IMAGE:-bbengamin/paperclip-enviroment}:${DOCKER_TAG:-latest}
     build:
       context: .
     container_name: ubuntu-ssh
