@@ -41,8 +41,13 @@ for dir in \
   "$SSH_HOME/.local/state/opencode"
 do
   install -d -m 700 "$dir"
-  chown -R "$SSH_UID:$SSH_GID" "$dir"
 done
+
+# Make the entire persisted home writable by the SSH user. This handles
+# migrated auth/config files regardless of which tool created them.
+chown -R "$SSH_UID:$SSH_GID" "$SSH_HOME"
+chmod 700 "$SSH_HOME/.ssh"
+chmod 600 "$SSH_HOME/.ssh/authorized_keys"
 
 mkdir -p "$HOST_KEYS_DIR"
 chmod 700 "$HOST_KEYS_DIR"

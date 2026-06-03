@@ -15,9 +15,10 @@ services:
     volumes:
       - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
       - .:/workspace:rw
-      - ${HOME_ROOT_SOURCE:-./container-home}:/home
       - hostkeys:/hostkeys
+      - guest-home:/home/${SSH_USER:-guest}
     restart: unless-stopped
 
 volumes:
+  guest-home:
   hostkeys:

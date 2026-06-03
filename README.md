@@ -59,10 +59,10 @@ Put one or more public keys in that file, one key per line, or change the path i
 
 - The SSH access is to the container, not the macOS host.
 - The repo is mounted read-write at `/workspace`.
-- The whole container home tree is bind-mounted from `./container-home` to `/home`, so user-level CLI auth and config persist in a normal local folder.
-- `CODEX_HOME` is pinned to `~/.codex` so Codex uses the persisted guest volume even when invoked outside an interactive SSH login.
+- The whole guest home is persisted in one Docker named volume mounted at `/home/guest`, so user-level CLI auth and config survive container recreation without host bind-mount ownership quirks.
+- `CODEX_HOME` is pinned to `~/.codex` so Codex uses that persisted home directory even when invoked outside an interactive SSH login.
 - `nano` is installed in the container.
-- `docker compose down` keeps that bind-mounted home data. `docker compose down -v` still deletes named volumes such as `/hostkeys`.
+- `docker compose down` keeps those volumes. `docker compose down -v` deletes them, including the persisted guest home and `/hostkeys`.
 
 ## Docker Hub publishing
 
