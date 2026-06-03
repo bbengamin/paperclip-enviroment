@@ -50,6 +50,45 @@ opencode --version
 
 Most of them still need their API keys or local config after login.
 
+### Logging in from Docker
+
+If you log into a CLI with `docker exec` or `docker compose exec`, run it as `guest` so the auth is written to `/home/guest` and survives container recreation.
+
+Open an interactive shell as `guest`:
+
+```bash
+docker exec -it --user guest ubuntu-ssh sh
+```
+
+Or with Docker Compose:
+
+```bash
+docker compose exec --user guest ubuntu-ssh sh
+```
+
+Then log in normally, for example:
+
+```bash
+cd /workspace
+claude login
+codex login
+```
+
+One-shot examples:
+
+```bash
+docker exec -it --user guest ubuntu-ssh sh -lc 'cd /workspace && claude login'
+docker compose exec --user guest ubuntu-ssh sh -lc 'cd /workspace && codex login'
+```
+
+Avoid logging in as the default `root` user:
+
+```bash
+docker exec -it ubuntu-ssh sh
+```
+
+That stores auth under `/root`, which is not the persisted working home for the SSH user.
+
 ## Add other users
 
 By default, `.env.example` points `AUTHORIZED_KEYS_SOURCE` at `./authorized_keys`.
