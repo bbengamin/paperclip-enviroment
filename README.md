@@ -59,9 +59,10 @@ Put one or more public keys in that file, one key per line, or change the path i
 
 - The SSH access is to the container, not the macOS host.
 - The repo is mounted read-write at `/workspace`.
-- Persistent named volumes are used for `/hostkeys`, `~/.claude`, `~/.codex`, `~/.config/opencode`, `~/.local/share/opencode`, and `~/.local/state/opencode`.
+- The whole container home tree is bind-mounted from `./container-home` to `/home`, so user-level CLI auth and config persist in a normal local folder.
+- `CODEX_HOME` is pinned to `~/.codex` so Codex uses the persisted guest volume even when invoked outside an interactive SSH login.
 - `nano` is installed in the container.
-- `docker compose down` keeps those named volumes. `docker compose down -v` deletes them, including stored auth/session state.
+- `docker compose down` keeps that bind-mounted home data. `docker compose down -v` still deletes named volumes such as `/hostkeys`.
 
 ## Docker Hub publishing
 

@@ -7,6 +7,7 @@ services:
     ports:
       - "${HOST_BIND_IP}:2222:22"
     environment:
+      CODEX_HOME: /home/${SSH_USER:-guest}/.codex
       SSH_USER: ${SSH_USER:-guest}
       SSH_UID: ${SSH_UID:-1000}
       SSH_GID: ${SSH_GID:-1000}
@@ -14,18 +15,9 @@ services:
     volumes:
       - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
       - .:/workspace:rw
+      - ${HOME_ROOT_SOURCE:-./container-home}:/home
       - hostkeys:/hostkeys
-      - claude:/home/${SSH_USER:-guest}/.claude
-      - codex:/home/${SSH_USER:-guest}/.codex
-      - opencode-config:/home/${SSH_USER:-guest}/.config/opencode
-      - opencode-data:/home/${SSH_USER:-guest}/.local/share/opencode
-      - opencode-state:/home/${SSH_USER:-guest}/.local/state/opencode
     restart: unless-stopped
 
 volumes:
   hostkeys:
-  claude:
-  codex:
-  opencode-config:
-  opencode-data:
-  opencode-state:

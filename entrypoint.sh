@@ -25,16 +25,24 @@ fi
 # password hash so OpenSSH will allow key-based logins while password auth stays off.
 usermod -p "$(openssl passwd -6 disabled-login)" "$SSH_USER"
 
+install -d -m 700 "$SSH_HOME"
+chown "$SSH_UID:$SSH_GID" "$SSH_HOME"
 install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.ssh"
 install -m 600 -o "$SSH_USER" -g "$SSH_GID" "$AUTHORIZED_KEYS_FILE" "$SSH_HOME/.ssh/authorized_keys"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.claude"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.codex"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.config/opencode"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/share"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/share/opencode"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/state"
-install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/state/opencode"
+for dir in \
+  "$SSH_HOME/.claude" \
+  "$SSH_HOME/.codex" \
+  "$SSH_HOME/.config" \
+  "$SSH_HOME/.config/opencode" \
+  "$SSH_HOME/.local" \
+  "$SSH_HOME/.local/share" \
+  "$SSH_HOME/.local/share/opencode" \
+  "$SSH_HOME/.local/state" \
+  "$SSH_HOME/.local/state/opencode"
+do
+  install -d -m 700 "$dir"
+  chown -R "$SSH_UID:$SSH_GID" "$dir"
+done
 
 mkdir -p "$HOST_KEYS_DIR"
 chmod 700 "$HOST_KEYS_DIR"
