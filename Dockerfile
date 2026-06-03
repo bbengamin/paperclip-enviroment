@@ -11,7 +11,9 @@ RUN apt-get update \
         npm \
         openssh-server \
         ripgrep \
+        xz-utils \
     && npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai \
+    && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --skip-setup --skip-browser \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd
 

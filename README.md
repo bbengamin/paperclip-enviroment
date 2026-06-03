@@ -8,7 +8,7 @@ This container gives remote users shell access to an Ubuntu 24.04 container on t
 - accepts public-key auth only
 - exposes container SSH on host port `2222`, bound to the Tailscale IP only
 - mounts this repo at `/workspace` as read-write
-- includes `claude`, `codex`, and `opencode` CLIs in the image
+- includes `claude`, `codex`, `opencode`, and `hermes` CLIs in the image
 
 ## First run
 
@@ -39,9 +39,11 @@ These are installed globally and available in the shell:
 claude --version
 codex --version
 opencode --version
+hermes --version
 ```
 
 Most of them still need their API keys or local config after login.
+`hermes` is installed from the official Nous Research installer with setup skipped, so you can run `hermes setup` after login.
 
 ## Add other users
 
