@@ -30,6 +30,11 @@ install -m 600 -o "$SSH_USER" -g "$SSH_GID" "$AUTHORIZED_KEYS_FILE" "$SSH_HOME/.
 install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.claude"
 install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.codex"
 install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.config/opencode"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/share"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/share/opencode"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/state"
+install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.local/state/opencode"
 
 mkdir -p "$HOST_KEYS_DIR"
 chmod 700 "$HOST_KEYS_DIR"

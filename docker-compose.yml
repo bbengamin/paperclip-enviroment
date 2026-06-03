@@ -17,11 +17,15 @@ services:
       - hostkeys:/hostkeys
       - claude:/home/${SSH_USER:-guest}/.claude
       - codex:/home/${SSH_USER:-guest}/.codex
-      - opencode:/home/${SSH_USER:-guest}/.config/opencode
+      - opencode-config:/home/${SSH_USER:-guest}/.config/opencode
+      - opencode-data:/home/${SSH_USER:-guest}/.local/share/opencode
+      - opencode-state:/home/${SSH_USER:-guest}/.local/state/opencode
     restart: unless-stopped
 
 volumes:
   hostkeys:
   claude:
   codex:
-  opencode:
+  opencode-config:
+  opencode-data:
+  opencode-state:
