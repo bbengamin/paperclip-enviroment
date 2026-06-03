@@ -5,6 +5,7 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+        bubblewrap \
         ca-certificates \
         curl \
         git \
@@ -14,6 +15,7 @@ RUN apt-get update \
         ripgrep \
         xz-utils \
     && npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai \
+    && ln -sf /usr/bin/bwrap /usr/local/bin/bubblewrap \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd
 
