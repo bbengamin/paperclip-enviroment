@@ -89,6 +89,74 @@ docker exec -it ubuntu-ssh sh
 
 That stores auth under `/root`, which is not the persisted working home for the SSH user.
 
+## Docker access (Docker-in-Docker, rootless)
+
+The container runs its **own** Docker daemon so workers can build and run
+containers from inside the SSH environment. It uses **rootless dockerd**: the
+daemon runs as the unprivileged SSH user inside a user namespace, not as host
+root, and the host Docker socket is **not** mounted.
+
+Why rootless DinD instead of mounting the host socket (Docker-outside-of-Docker):
+
+- **Isolation between workers.** Each environment has its own daemon, so
+  `docker ps` only shows that worker's containers — workers can't inspect,
+  exec into, or kill each other's (or the host's) containers.
+- **Self-owned containers.** Containers and volumes you create live inside this
+  environment, and `docker run -v` paths resolve against the environment's
+  filesystem, not the host's.
+- **No host-root exposure.** There is no `/var/run/docker.sock` bind mount, so
+  the SSH user cannot use the Docker socket to take over the host.
+
+### How it works
+
+- The image installs the full Docker engine, CLI, Compose/Buildx plugins, and
+  the rootless extras (`docker-ce-rootless-extras`, `uidmap`, `slirp4netns`,
+  `fuse-overlayfs`).
+- `entrypoint.sh` adds `subuid`/`subgid` ranges for the SSH user, then starts
+  `dockerd-rootless.sh` in the background as that user. The daemon listens on a
+  per-user socket at `unix:///run/user/<uid>/docker.sock` and stores data under
+  `~/.local/share/docker` (persisted in the `guest-home` volume).
+- `DOCKER_HOST` and `XDG_RUNTIME_DIR` are exported to SSH sessions via
+  `/etc/profile.d/docker-rootless.sh`, so `docker` just works after login.
+- `docker-compose.yml` sets `security_opt: [seccomp:unconfined, apparmor:unconfined]`,
+  which rootless dockerd needs to create the nested user/network namespaces.
+
+Daemon startup is **non-fatal**: if Docker can't start on a given host, SSH
+access still comes up. Check `/var/log/dockerd-rootless.log` in the container to
+diagnose.
+
+### Verify from inside the container
+
+```bash
+docker version          # Client and Server should both report
+docker info | grep -i 'rootless\|storage driver'
+docker run --rm hello-world
+docker compose version
+```
+
+### Configuration
+
+Set the runtime mode in `.env`:
+
+```bash
+DOCKER_RUNTIME=rootless   # default; use "off" to disable Docker startup
+```
+
+### Host requirements and fallbacks
+
+Rootless dockerd needs the host kernel to allow unprivileged user namespaces
+(true on most modern Linux hosts and inside the Docker Desktop VM). The default
+storage driver is `fuse-overlayfs` when `/dev/fuse` is available, otherwise it
+falls back to `vfs` (works everywhere, just uses more disk).
+
+If the daemon fails to start, try these in order (see the commented block in
+`docker-compose.yml`):
+
+1. Add the `/dev/fuse` device for `fuse-overlayfs` storage.
+2. Run the host with the [sysbox](https://github.com/nestybox/sysbox) runtime
+   (`runtime: sysbox-runc`) for stronger isolation without `unconfined`.
+3. As a last resort, set `privileged: true` on the service.
+
 ## Add other users
 
 By default, `.env.example` points `AUTHORIZED_KEYS_SOURCE` at `./authorized_keys`.
