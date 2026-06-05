@@ -28,14 +28,20 @@ services:
       # seccomp/AppArmor profiles block the syscalls it needs (unshare, mount).
       - seccomp:unconfined
       - apparmor:unconfined
-    # If rootless dockerd fails to start on your host, try these fallbacks in
-    # order of preference (see README "Docker access"):
-    #   1. add the /dev/fuse device so fuse-overlayfs can be used as storage
-    #   2. run the host with the sysbox runtime (`runtime: sysbox-runc`)
-    #   3. last resort: set `privileged: true`
-    # devices:
-    #   - /dev/fuse
-    # privileged: true
+    cap_add:
+      # Rootless dockerd needs to create nested UID/GID maps and mount
+      # namespaces inside the outer environment container. NET_ADMIN plus
+      # /dev/net/tun lets rootlesskit create its slirp4netns TAP device.
+      - SYS_ADMIN
+      - SETUID
+      - SETGID
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    # Required on Docker Desktop for nested containers to start successfully
+    # under the rootless daemon. Without this, dockerd may listen, but inner
+    # `docker run` can fail mounting /proc during runc setup.
+    privileged: true
     restart: unless-stopped
 
 volumes:

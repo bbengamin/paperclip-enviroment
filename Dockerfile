@@ -9,6 +9,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        iproute2 \
         nano \
         npm \
         openssh-server \

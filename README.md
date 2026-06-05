@@ -109,7 +109,8 @@ Why rootless DinD instead of mounting the host socket (Docker-outside-of-Docker)
 
 ### How it works
 
-- The image installs the full Docker engine, CLI, Compose/Buildx plugins, and
+- The image installs the full Docker engine, CLI, Compose/Buildx plugins,
+  `iproute2`, and
   the rootless extras (`docker-ce-rootless-extras`, `uidmap`, `slirp4netns`,
   `fuse-overlayfs`).
 - `entrypoint.sh` adds `subuid`/`subgid` ranges for the SSH user, then starts
@@ -118,8 +119,12 @@ Why rootless DinD instead of mounting the host socket (Docker-outside-of-Docker)
   `~/.local/share/docker` (persisted in the `guest-home` volume).
 - `DOCKER_HOST` and `XDG_RUNTIME_DIR` are exported to SSH sessions via
   `/etc/profile.d/docker-rootless.sh`, so `docker` just works after login.
-- `docker-compose.yml` sets `security_opt: [seccomp:unconfined, apparmor:unconfined]`,
-  which rootless dockerd needs to create the nested user/network namespaces.
+- `docker-compose.yml` grants the outer environment container the namespace and
+  network permissions rootless dockerd needs, including `/dev/net/tun` for
+  `slirp4netns`.
+- On Docker Desktop, the service also runs with `privileged: true`; without it,
+  the daemon can start but nested `docker run` may fail when `runc` mounts
+  `/proc`.
 
 Daemon startup is **non-fatal**: if Docker can't start on a given host, SSH
 access still comes up. Check `/var/log/dockerd-rootless.log` in the container to
@@ -145,17 +150,18 @@ DOCKER_RUNTIME=rootless   # default; use "off" to disable Docker startup
 ### Host requirements and fallbacks
 
 Rootless dockerd needs the host kernel to allow unprivileged user namespaces
-(true on most modern Linux hosts and inside the Docker Desktop VM). The default
-storage driver is `fuse-overlayfs` when `/dev/fuse` is available, otherwise it
-falls back to `vfs` (works everywhere, just uses more disk).
+(true on most modern Linux hosts and inside the Docker Desktop VM). This Compose
+setup also expects `/dev/net/tun` so `slirp4netns` can create its TAP device.
+The daemon uses `overlayfs` when supported; if your host requires
+`fuse-overlayfs`, add `/dev/fuse` to the service.
 
-If the daemon fails to start, try these in order (see the commented block in
-`docker-compose.yml`):
+If the daemon fails to start on a stricter Linux host, alternatives to compare
+against the Docker Desktop-oriented default are:
 
-1. Add the `/dev/fuse` device for `fuse-overlayfs` storage.
-2. Run the host with the [sysbox](https://github.com/nestybox/sysbox) runtime
+1. Add the `/dev/fuse` device for `fuse-overlayfs` storage if overlayfs is not
+   available.
+2. Run the service with the [sysbox](https://github.com/nestybox/sysbox) runtime
    (`runtime: sysbox-runc`) for stronger isolation without `unconfined`.
-3. As a last resort, set `privileged: true` on the service.
 
 ## Add other users
 
