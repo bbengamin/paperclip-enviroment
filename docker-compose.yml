@@ -12,12 +12,26 @@ services:
       SSH_UID: ${SSH_UID:-1000}
       SSH_GID: ${SSH_GID:-1000}
       AUTHORIZED_KEYS_FILE: /run/authorized_keys
+      # Rootless Docker-in-Docker for the SSH user. Set to "off" to disable.
+      DOCKER_RUNTIME: ${DOCKER_RUNTIME:-rootless}
     volumes:
       - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
       - .:/workspace:rw
       - hostkeys:/hostkeys
+      # The rootless dockerd stores its data under the guest home
+      # (~/.local/share/docker), which this named volume already persists.
+      # No host /var/run/docker.sock bind mount: each environment runs its own
+      # isolated daemon instead of sharing (and exposing) the host's root socket.
       - guest-home:/home/${SSH_USER:-guest}
-      - /var/run/docker.sock:/var/run/docker.sock:rw
+    # Rootless dockerd needs to create user namespaces. The default Docker
+    # seccomp/AppArmor profiles block the clone/unshare syscalls rootlesskit
+    # relies on, which makes the daemon fail with:
+    #   rootlesskit: failed to start the child: fork/exec /proc/self/exe:
+    #   operation not permitted
+    # Unconfining this single, dedicated runtime container restores them.
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
     restart: unless-stopped
 
 volumes:

@@ -17,7 +17,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd
 
-# Install Docker CLI + Compose v2 plugin (Docker-outside-of-Docker)
+# Install rootless Docker-in-Docker (each environment runs its own dockerd as
+# the SSH user, no shared host socket). docker-ce-rootless-extras ships
+# dockerd-rootless.sh + rootlesskit; uidmap/slirp4netns/fuse-overlayfs/
+# dbus-user-session provide the user-namespace, networking and storage plumbing.
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -26,8 +29,15 @@ RUN install -m 0755 -d /etc/apt/keyrings \
         > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        docker-ce \
         docker-ce-cli \
+        docker-ce-rootless-extras \
+        docker-buildx-plugin \
         docker-compose-plugin \
+        uidmap \
+        slirp4netns \
+        fuse-overlayfs \
+        dbus-user-session \
     && rm -rf /var/lib/apt/lists/*
 
 COPY entrypoint.sh /entrypoint.sh
