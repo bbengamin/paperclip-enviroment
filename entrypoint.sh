@@ -25,6 +25,27 @@ fi
 # password hash so OpenSSH will allow key-based logins while password auth stays off.
 usermod -p "$(openssl passwd -6 disabled-login)" "$SSH_USER"
 
+# Docker-outside-of-Docker: when the host Docker socket is bind-mounted, make it
+# usable by the unprivileged SSH user. The socket is owned by the host's docker
+# group GID, which usually has no matching group inside this container, so create
+# one and add the SSH user to it. Without this the user would get EACCES on every
+# docker command.
+DOCKER_SOCK="${DOCKER_SOCK:-/var/run/docker.sock}"
+if [ -S "$DOCKER_SOCK" ]; then
+  DOCKER_SOCK_GID="$(stat -c '%g' "$DOCKER_SOCK")"
+  if [ -n "$DOCKER_SOCK_GID" ] && [ "$DOCKER_SOCK_GID" != "0" ]; then
+    if ! getent group "$DOCKER_SOCK_GID" >/dev/null 2>&1; then
+      groupadd --gid "$DOCKER_SOCK_GID" docker-host
+    fi
+    DOCKER_SOCK_GROUP="$(getent group "$DOCKER_SOCK_GID" | cut -d: -f1)"
+    usermod -aG "$DOCKER_SOCK_GROUP" "$SSH_USER"
+  else
+    # Root-owned socket (e.g. Docker Desktop): user already maps to root via the
+    # socket's permissions in many setups, so just warn instead of failing.
+    echo "docker socket $DOCKER_SOCK is group-owned by root; $SSH_USER may need additional privileges" >&2
+  fi
+fi
+
 install -d -m 700 "$SSH_HOME"
 chown "$SSH_UID:$SSH_GID" "$SSH_HOME"
 install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.ssh"

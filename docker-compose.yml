@@ -12,11 +12,16 @@ services:
       SSH_UID: ${SSH_UID:-1000}
       SSH_GID: ${SSH_GID:-1000}
       AUTHORIZED_KEYS_FILE: /run/authorized_keys
+      DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
       - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
       - .:/workspace:rw
       - hostkeys:/hostkeys
       - guest-home:/home/${SSH_USER:-guest}
+      # Docker-outside-of-Docker: share the host Docker daemon socket so the
+      # container's docker CLI talks to the host engine. Override the host path
+      # via DOCKER_SOCKET in .env if the daemon listens elsewhere.
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:rw
     restart: unless-stopped
 
 volumes:

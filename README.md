@@ -89,6 +89,44 @@ docker exec -it ubuntu-ssh sh
 
 That stores auth under `/root`, which is not the persisted working home for the SSH user.
 
+## Docker access (Docker-outside-of-Docker)
+
+The container ships with the Docker CLI and Compose v2 plugin and talks to the
+**host** Docker daemon through the bind-mounted host socket. No Docker daemon
+runs inside the container.
+
+How it works:
+
+- `docker-ce-cli` and `docker-compose-plugin` are installed in the image
+- `docker-compose.yml` bind-mounts `${DOCKER_SOCKET:-/var/run/docker.sock}` to
+  `/var/run/docker.sock` and sets `DOCKER_HOST=unix:///var/run/docker.sock`
+- `entrypoint.sh` reads the socket's group GID at startup and adds the SSH user
+  to a matching group so `docker` works without root
+
+Configure the host socket path in `.env` if your daemon listens elsewhere:
+
+```bash
+DOCKER_SOCKET=/var/run/docker.sock
+```
+
+Verify from inside the container:
+
+```bash
+docker version
+docker compose version
+docker ps
+```
+
+Notes and caveats:
+
+- Containers and volumes you create are managed by the **host** daemon, not the
+  container, and paths in `docker run -v` refer to host paths.
+- Sharing the Docker socket grants the SSH user effective control of the host
+  Docker engine (root-equivalent on the host). Only enable this for trusted
+  users.
+- On Docker Desktop the socket is often root-owned; the SSH user may need extra
+  privileges. The entrypoint logs a warning in that case.
+
 ## Add other users
 
 By default, `.env.example` points `AUTHORIZED_KEYS_SOURCE` at `./authorized_keys`.
