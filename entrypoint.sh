@@ -25,6 +25,16 @@ fi
 # password hash so OpenSSH will allow key-based logins while password auth stays off.
 usermod -p "$(openssl passwd -6 disabled-login)" "$SSH_USER"
 
+# Grant SSH user access to the Docker socket if it exists
+if [ -S /var/run/docker.sock ]; then
+  DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+  if ! getent group "$DOCKER_GID" >/dev/null 2>&1; then
+    groupadd --gid "$DOCKER_GID" docker
+  fi
+  DOCKER_GROUP=$(getent group "$DOCKER_GID" | cut -d: -f1)
+  usermod -aG "$DOCKER_GROUP" "$SSH_USER" || true
+fi
+
 install -d -m 700 "$SSH_HOME"
 chown "$SSH_UID:$SSH_GID" "$SSH_HOME"
 install -d -m 700 -o "$SSH_USER" -g "$SSH_GID" "$SSH_HOME/.ssh"
