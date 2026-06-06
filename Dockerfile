@@ -2,6 +2,7 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NPM_CONFIG_PREFIX=/usr/local
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -37,10 +38,15 @@ RUN apt-get update \
         iptables \
         slirp4netns \
         uidmap \
-    && npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai \
+    && npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai playwright \
+    && mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
+    && npx playwright install --with-deps chromium \
+    && chmod -R 755 "$PLAYWRIGHT_BROWSERS_PATH" \
     && ln -sf /usr/bin/bwrap /usr/local/bin/bubblewrap \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd
+
+ENV NODE_PATH=/usr/local/lib/node_modules
 
 COPY entrypoint.sh /entrypoint.sh
 

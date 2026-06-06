@@ -8,4 +8,5 @@
 .vscode/
 
 hostkeys/
+container-home/
 .buildx-cache/

@@ -9,6 +9,7 @@ This container gives remote users shell access to an Ubuntu 24.04 container on t
 - exposes container SSH on host port `2222`, bound to the Tailscale IP only
 - mounts this repo at `/workspace` as read-write
 - includes `claude`, `codex`, and `opencode` CLIs in the image
+- includes Playwright with Chromium preinstalled for browserless testing
 
 ## First run
 
@@ -46,9 +47,27 @@ These are installed globally and available in the shell:
 claude --version
 codex --version
 opencode --version
+playwright --version
 ```
 
 Most of them still need their API keys or local config after login.
+
+## Browserless testing
+
+The image includes the Playwright CLI and a preinstalled Chromium browser at
+`/ms-playwright`, exposed through `PLAYWRIGHT_BROWSERS_PATH`. This lets coding
+agents run quick browser smoke tests without first downloading a browser.
+
+Examples:
+
+```bash
+playwright --version
+playwright install --dry-run chromium
+```
+
+Project test suites should still declare their own test runner dependency, for
+example `@playwright/test`, when they need Playwright fixtures, assertions, or
+project-specific config.
 
 ### Logging in from Docker
 
