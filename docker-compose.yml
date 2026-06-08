@@ -13,6 +13,8 @@ services:
       SSH_GID: ${SSH_GID:-1000}
       AUTHORIZED_KEYS_FILE: /run/authorized_keys
       WORKSPACE_DIR: /workspace
+      ANTHROPIC_BASE_URL:
+      ANTHROPIC_AUTH_TOKEN:
       # Docker-in-Docker: the environment runs its own rootless dockerd and
       # exposes it on a per-user socket. DOCKER_RUNTIME=off disables startup.
       DOCKER_RUNTIME: ${DOCKER_RUNTIME:-rootless}
