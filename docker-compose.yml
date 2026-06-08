@@ -12,12 +12,16 @@ services:
       SSH_UID: ${SSH_UID:-1000}
       SSH_GID: ${SSH_GID:-1000}
       AUTHORIZED_KEYS_FILE: /run/authorized_keys
+      WORKSPACE_DIR: /workspace
       # Docker-in-Docker: the environment runs its own rootless dockerd and
       # exposes it on a per-user socket. DOCKER_RUNTIME=off disables startup.
       DOCKER_RUNTIME: ${DOCKER_RUNTIME:-rootless}
     volumes:
       - ${AUTHORIZED_KEYS_SOURCE}:/run/authorized_keys:ro
-      - .:/workspace:rw
+      # /workspace is Paperclip's remote runtime root. Keep it separate from
+      # this environment repo so agent runs never inherit the wrong git context.
+      - paperclip-workspace:/workspace
+      - .:/environment:ro
       - hostkeys:/hostkeys
       # Rootless Docker stores its images/containers under the SSH user's home
       # (~/.local/share/docker), so the persisted home volume keeps them across
@@ -47,3 +51,4 @@ services:
 volumes:
   guest-home:
   hostkeys:
+  paperclip-workspace:

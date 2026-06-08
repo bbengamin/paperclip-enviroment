@@ -7,6 +7,7 @@ SSH_GID="${SSH_GID:-1000}"
 AUTHORIZED_KEYS_FILE="${AUTHORIZED_KEYS_FILE:-/run/authorized_keys}"
 HOST_KEYS_DIR="${HOST_KEYS_DIR:-/hostkeys}"
 SSH_HOME="/home/${SSH_USER}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
 
 if [ ! -f "$AUTHORIZED_KEYS_FILE" ]; then
   echo "authorized keys file not found: $AUTHORIZED_KEYS_FILE" >&2
@@ -48,6 +49,10 @@ done
 chown -R "$SSH_UID:$SSH_GID" "$SSH_HOME"
 chmod 700 "$SSH_HOME/.ssh"
 chmod 600 "$SSH_HOME/.ssh/authorized_keys"
+
+# Paperclip uses this directory as the remote runtime root for staged agent
+# workspaces. Keep it user-owned and independent from the environment repo.
+install -d -m 775 -o "$SSH_UID" -g "$SSH_GID" "$WORKSPACE_DIR"
 
 # --- Docker-in-Docker (rootless) -------------------------------------------
 # Give the SSH user an isolated, self-owned Docker daemon instead of sharing

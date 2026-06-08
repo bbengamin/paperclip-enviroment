@@ -7,7 +7,8 @@ This container gives remote users shell access to an Ubuntu 24.04 container on t
 - runs `sshd` in an Ubuntu container
 - accepts public-key auth only
 - exposes container SSH on host port `2222`, bound to the Tailscale IP only
-- mounts this repo at `/workspace` as read-write
+- provides `/workspace` as a dedicated Paperclip runtime volume
+- mounts this environment repo at `/environment` as read-only reference material
 - includes `claude`, `codex`, and `opencode` CLIs in the image
 - includes Playwright with Chromium preinstalled for browserless testing
 
@@ -190,7 +191,8 @@ Put one or more public keys in that file, one key per line, or change the path i
 ## Notes
 
 - The SSH access is to the container, not the macOS host.
-- The repo is mounted read-write at `/workspace`.
+- `/workspace` is a dedicated Paperclip runtime volume. Configure Paperclip SSH environments to use it as `remoteWorkspacePath`; do not put this environment repo or a project checkout there directly.
+- This environment repo is mounted read-only at `/environment` for inspection and debugging.
 - The whole guest home is persisted in one Docker named volume mounted at `/home/guest`, so user-level CLI auth and config survive container recreation without host bind-mount ownership quirks.
 - `CODEX_HOME` is pinned to `~/.codex` so Codex uses that persisted home directory even when invoked outside an interactive SSH login.
 - `nano` is installed in the container.
