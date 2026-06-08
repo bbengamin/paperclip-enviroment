@@ -84,6 +84,12 @@ export XDG_RUNTIME_DIR="${DOCKER_RUN_DIR}"
 export DOCKER_HOST="unix://${DOCKER_RUN_DIR}/docker.sock"
 EOF
   chmod 644 /etc/profile.d/docker-rootless.sh
+  touch "$SSH_HOME/.profile"
+  if ! grep -q 'docker-rootless.sh' "$SSH_HOME/.profile" 2>/dev/null; then
+    echo '[ -f /etc/profile.d/docker-rootless.sh ] && . /etc/profile.d/docker-rootless.sh' >>"$SSH_HOME/.profile"
+  fi
+  chown "$SSH_UID:$SSH_GID" "$SSH_HOME/.profile"
+  chmod 644 "$SSH_HOME/.profile"
   if ! grep -q 'docker-rootless.sh' /etc/bash.bashrc 2>/dev/null; then
     echo '[ -f /etc/profile.d/docker-rootless.sh ] && . /etc/profile.d/docker-rootless.sh' >>/etc/bash.bashrc
   fi
