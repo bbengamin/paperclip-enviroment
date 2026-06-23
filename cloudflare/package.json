@@ -1,0 +1,23 @@
+{
+  "name": "paperclip-cloudflare-sandbox-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:tooling": "node scripts/sync-tooling.mjs",
+    "dev": "npm run sync:tooling && wrangler dev",
+    "deploy": "npm run sync:tooling && wrangler deploy",
+    "deploy:dry-run": "npm run sync:tooling && wrangler deploy --dry-run",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.12.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260615.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8",
+    "wrangler": "^4.100.0"
+  }
+}

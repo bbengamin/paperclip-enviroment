@@ -1,4 +1,40 @@
-# Ubuntu SSH container over Tailscale
+# Paperclip environment: classic SSH and Cloudflare sandbox
+
+This repo is the source of truth for two Paperclip environment deployment
+modes:
+
+- **Classic Docker / SSH**: the existing Docker Compose flow that exposes SSH
+  into a persistent Ubuntu environment.
+- **Cloudflare sandbox**: a Wrangler-deployed Worker bridge and Cloudflare
+  sandbox container under `cloudflare/`.
+
+Both modes share installed app/tool policy through `tooling/apps.env` and the
+installer scripts in `scripts/`. See `tooling/README.md` before changing Codex,
+Claude, opencode, Playwright, Docker, or Tailscale installation.
+
+## Deployment paths
+
+Classic Docker / SSH:
+
+```bash
+docker compose up -d --build
+```
+
+Cloudflare sandbox:
+
+```bash
+cd cloudflare
+npm ci
+npm test
+npm run typecheck
+npm run deploy
+```
+
+Cloudflare requires Worker secrets `BRIDGE_AUTH_TOKEN` and `TAILSCALE_AUTHKEY`.
+The old standalone Cloudflare sandbox image repo can be deleted after this repo
+passes local Docker and Wrangler deployment tests.
+
+## Classic Docker / SSH
 
 This container gives remote users shell access to an Ubuntu 24.04 container on this machine.
 

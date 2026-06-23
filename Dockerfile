@@ -4,46 +4,20 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV NPM_CONFIG_PREFIX=/usr/local
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bubblewrap \
-        ca-certificates \
-        curl \
-        git \
-        iproute2 \
-        nano \
-        npm \
-        openssh-server \
-        ripgrep \
-        xz-utils \
-    # Docker Engine + CLI + Compose/Buildx plugins and the rootless extras.
-    # The environment runs its OWN rootless dockerd (Docker-in-Docker), so each
-    # worker gets an isolated, self-owned daemon instead of sharing the host
-    # socket. uidmap/slirp4netns/fuse-overlayfs are the rootless runtime deps.
-    # See entrypoint.sh and the README "Docker access" section.
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
-    && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" > /etc/apt/sources.list.d/docker.list \
+COPY tooling/apps.env /tmp/paperclip-tooling/apps.env
+COPY scripts/install-common-tools.sh scripts/install-docker-tools.sh scripts/install-tailscale.sh /tmp/paperclip-tooling/
+
+RUN chmod 755 /tmp/paperclip-tooling/*.sh \
+    && INSTALL_APT_NPM=1 /tmp/paperclip-tooling/install-common-tools.sh \
+    && INCLUDE_DOCKER_DAEMON=1 /tmp/paperclip-tooling/install-docker-tools.sh \
+    && /tmp/paperclip-tooling/install-tailscale.sh \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        docker-ce \
-        docker-ce-cli \
-        containerd.io \
-        docker-buildx-plugin \
-        docker-compose-plugin \
-        docker-ce-rootless-extras \
-        dbus-user-session \
-        fuse-overlayfs \
-        iptables \
-        slirp4netns \
-        uidmap \
-    && npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai playwright \
-    && mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
-    && npx playwright install --with-deps chromium \
-    && chmod -R 755 "$PLAYWRIGHT_BROWSERS_PATH" \
-    && ln -sf /usr/bin/bwrap /usr/local/bin/bubblewrap \
-    && rm -rf /var/lib/apt/lists/* \
+        openssh-server \
+        openssl \
+        passwd \
+        util-linux \
+    && rm -rf /var/lib/apt/lists/* /tmp/paperclip-tooling \
     && mkdir -p /var/run/sshd
 
 ENV NODE_PATH=/usr/local/lib/node_modules
