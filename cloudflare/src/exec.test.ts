@@ -81,6 +81,33 @@ describe("bridge exec", () => {
     expect(onOutput).toHaveBeenCalledWith("stdout", "hello\n");
   });
 
+  it("re-resolves and retries transient Cloudflare session watcher ENOENT failures", async () => {
+    const firstExec = vi.fn().mockRejectedValue(
+      new Error("ENOENT: no such file or directory, watch '/tmp/session-sandbox-pc-probe-1-123'"),
+    );
+    const secondExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "ok\n", stderr: "" });
+    const sandbox = {
+      getSession: vi.fn()
+        .mockResolvedValueOnce({ exec: firstExec })
+        .mockResolvedValueOnce({ exec: secondExec }),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+    } as const;
+
+    const result = await executeInSandbox({
+      sandbox: sandbox as never,
+      command: "pwd",
+      sessionStrategy: "named",
+      sessionId: "paperclip",
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: "ok\n" });
+    expect(sandbox.getSession).toHaveBeenCalledTimes(2);
+    expect(firstExec).toHaveBeenCalledTimes(1);
+    expect(secondExec).toHaveBeenCalledTimes(1);
+  });
+
   it("stages stdin through a sandbox temp file and redirects from it", async () => {
     const exec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const writeFile = vi.fn().mockResolvedValue(undefined);

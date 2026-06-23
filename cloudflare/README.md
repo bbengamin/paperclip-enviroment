@@ -55,6 +55,13 @@ docker run --network=host --rm app
 docker compose --project-name paperclip up
 ```
 
+The Cloudflare image installs a small Docker CLI wrapper that defaults nested
+`docker build`, `docker buildx build`, `docker run`, and common
+`docker compose` execution paths to host networking. This avoids the rootless
+DIND bridge-network DNS/NAT failure mode seen in Cloudflare containers. Set
+`PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=0` inside a sandbox command to bypass
+the wrapper and call Docker with its normal networking behavior.
+
 Images and containers created inside a Cloudflare sandbox are ephemeral and may
 be lost when the sandbox sleeps or is destroyed.
 

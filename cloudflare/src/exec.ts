@@ -88,6 +88,10 @@ function isTransientSessionWatchError(error: unknown): boolean {
   return /ENOENT: no such file or directory, watch '\/tmp\/session-/i.test(message);
 }
 
+function retryDelayMs(attempt: number): number {
+  return Math.min(2_000, 250 * (attempt + 1));
+}
+
 export async function executeInSandbox(params: BridgeExecuteParams) {
   // The @cloudflare/sandbox SDK's exec() takes a single command string and a
   // narrow option set ({ cwd, env, timeout, ... }) — it does not accept `args`
@@ -103,13 +107,6 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
   }
 
   try {
-    const target = await resolveExecutionTarget(params.sandbox, {
-      sessionStrategy: params.sessionStrategy,
-      sessionId: params.sessionId,
-      cwd: params.cwd,
-      env: params.env,
-      timeoutMs: params.timeoutMs,
-    });
     const script = buildLoginShellScript({
       command: params.command,
       args: params.args ?? [],
@@ -128,15 +125,25 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
           }
         : {}),
     };
-    let result;
-    try {
-      result = await target.exec(fullCommand, execOptions);
-    } catch (error) {
-      if (!isTransientSessionWatchError(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      result = await target.exec(fullCommand, execOptions);
+    let lastTransientError: unknown;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const target = await resolveExecutionTarget(params.sandbox, {
+        sessionStrategy: params.sessionStrategy,
+        sessionId: params.sessionId,
+        cwd: params.cwd,
+        env: params.env,
+        timeoutMs: params.timeoutMs,
+      });
+      try {
+        const result = await target.exec(fullCommand, execOptions);
+        return coerceExecuteResult(result);
+      } catch (error) {
+        if (!isTransientSessionWatchError(error)) throw error;
+        lastTransientError = error;
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt)));
+      }
     }
-    return coerceExecuteResult(result);
+    throw lastTransientError;
   } catch (error) {
     if (isTimeoutError(error)) {
       await cleanupTimedOutExecution(params.sandbox, {

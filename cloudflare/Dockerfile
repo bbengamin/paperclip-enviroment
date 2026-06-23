@@ -8,6 +8,7 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=1
 
 COPY --from=cloudflare-sandbox /container-server/sandbox /sandbox
 
@@ -23,7 +24,11 @@ RUN chmod 755 /tmp/paperclip-tooling/*.sh \
 
 COPY tailscale-up.sh /usr/local/bin/tailscale-up
 COPY boot-docker-for-dind.sh /home/rootless/boot-docker-for-dind.sh
+COPY docker-host-network-wrapper.sh /usr/local/bin/docker-host-network-wrapper
 RUN sed -i 's/\r$//' /usr/local/bin/tailscale-up /home/rootless/boot-docker-for-dind.sh \
+  && if [ ! -e /usr/local/bin/docker-real ]; then mv /usr/local/bin/docker /usr/local/bin/docker-real; fi \
+  && mv /usr/local/bin/docker-host-network-wrapper /usr/local/bin/docker \
+  && chmod +x /usr/local/bin/docker \
   && chmod +x /usr/local/bin/tailscale-up \
   && chmod +x /home/rootless/boot-docker-for-dind.sh \
   && mkdir -p /home/rootless/.docker-run /workspace \
