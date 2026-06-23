@@ -10,3 +10,7 @@
 hostkeys/
 container-home/
 .buildx-cache/
+
+node_modules/
+cloudflare/.docker-tooling/
+cloudflare/.wrangler/
