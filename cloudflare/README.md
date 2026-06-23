@@ -35,6 +35,18 @@ npm run deploy
 `npm run deploy` first syncs the repo-level tooling scripts into this folder's
 Docker build context, then runs `wrangler deploy`.
 
+## GitHub Actions Deployment
+
+The Cloudflare bridge workflow validates pull requests and deploys
+automatically after changes are merged to `main`.
+
+Configure these repository secrets:
+
+| Secret | Required | Purpose |
+|---|---:|---|
+| `CLOUDFLARE_API_TOKEN` | yes | Non-interactive Wrangler authentication |
+| `CLOUDFLARE_ACCOUNT_ID` | recommended | Selects the target account explicitly in CI |
+
 For a local dry-run check:
 
 ```bash
@@ -51,4 +63,3 @@ Configure the Paperclip Cloudflare sandbox environment with:
 | `bridgeAuthToken` | Same value as the Worker's `BRIDGE_AUTH_TOKEN` secret |
 
 Do not put `TAILSCALE_AUTHKEY` in Paperclip. It stays Worker-side.
-

@@ -6,12 +6,6 @@ on:
       - main
   pull_request:
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: Deploy the Cloudflare bridge after validation
-        required: true
-        type: boolean
-        default: false
 
 jobs:
   validate:
@@ -43,7 +37,7 @@ jobs:
         run: npm test
 
   deploy:
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
     defaults:
@@ -66,5 +60,5 @@ jobs:
       - name: Deploy
         run: npm run deploy
         env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
