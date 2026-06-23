@@ -1,25 +1,37 @@
-FROM docker.io/cloudflare/sandbox:0.12.1
+FROM docker.io/cloudflare/sandbox:0.12.1-musl AS cloudflare-sandbox
+
+FROM docker:dind-rootless
 
 USER root
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV NPM_CONFIG_PREFIX=/usr/local
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+COPY --from=cloudflare-sandbox /container-server/sandbox /sandbox
 
 # Populated from the repo-level tooling source by:
 #   npm run sync:tooling
 # The predeploy/predev scripts run it automatically before Wrangler builds.
 COPY .docker-tooling /tmp/paperclip-tooling
+COPY scripts/install-cloudflare-dind-tools.sh /tmp/paperclip-tooling/install-cloudflare-dind-tools.sh
 
 RUN chmod 755 /tmp/paperclip-tooling/*.sh \
-  && /tmp/paperclip-tooling/install-common-tools.sh \
-  && /tmp/paperclip-tooling/install-docker-tools.sh \
-  && /tmp/paperclip-tooling/install-tailscale.sh \
-  && rm -rf /var/lib/apt/lists/* /tmp/paperclip-tooling
+  && /tmp/paperclip-tooling/install-cloudflare-dind-tools.sh \
+  && rm -rf /tmp/paperclip-tooling
 
 COPY tailscale-up.sh /usr/local/bin/tailscale-up
-RUN sed -i 's/\r$//' /usr/local/bin/tailscale-up \
-  && chmod +x /usr/local/bin/tailscale-up
+COPY boot-docker-for-dind.sh /home/rootless/boot-docker-for-dind.sh
+RUN sed -i 's/\r$//' /usr/local/bin/tailscale-up /home/rootless/boot-docker-for-dind.sh \
+  && chmod +x /usr/local/bin/tailscale-up \
+  && chmod +x /home/rootless/boot-docker-for-dind.sh \
+  && mkdir -p /home/rootless/.docker-run /workspace \
+  && chmod 700 /home/rootless/.docker-run \
+  && chown -R rootless:rootless /home/rootless \
+  && chown -R rootless:rootless /workspace
 
 WORKDIR /workspace
 
+ENTRYPOINT ["/sandbox"]
+CMD ["/home/rootless/boot-docker-for-dind.sh"]

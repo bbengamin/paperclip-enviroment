@@ -31,6 +31,32 @@ describe("bridge routes", () => {
     vi.mocked(resolveSandbox).mockReset();
   });
 
+  it("reports Docker-in-Docker support in bridge health metadata", async () => {
+    const response = await handleBridgeRequest(
+      new Request("https://bridge.example.test/api/paperclip-sandbox/v1/health", {
+        method: "GET",
+        headers: {
+          Authorization: "Bearer secret-token",
+        },
+      }),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        TAILSCALE_AUTHKEY: "tskey-test",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      capabilities: {
+        dockerInDocker: true,
+        namedSessions: true,
+        reuseLease: true,
+      },
+    });
+  });
+
   it("writes lease sentinels through the named-session exec target", async () => {
     const sessionExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const sandbox = {

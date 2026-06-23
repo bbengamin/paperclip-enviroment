@@ -6,21 +6,26 @@ if [ -z "${TAILSCALE_AUTHKEY:-}" ]; then
   exit 1
 fi
 
-mkdir -p /var/lib/tailscale /var/run/tailscale /var/log
+TAILSCALE_STATE_DIR="${TAILSCALE_STATE_DIR:-${HOME:-/tmp}/.tailscale}"
+TAILSCALE_SOCKET="${TAILSCALE_SOCKET:-${TAILSCALE_STATE_DIR}/tailscaled.sock}"
+TAILSCALE_LOG="${TAILSCALE_LOG:-${TAILSCALE_STATE_DIR}/tailscaled.log}"
+
+mkdir -p "$TAILSCALE_STATE_DIR"
 
 if ! pgrep tailscaled >/dev/null 2>&1; then
   tailscaled \
-    --state=/var/lib/tailscale/tailscaled.state \
+    --socket="$TAILSCALE_SOCKET" \
+    --state="${TAILSCALE_STATE_DIR}/tailscaled.state" \
     --tun=userspace-networking \
     --socks5-server=127.0.0.1:1055 \
-    --outbound-http-proxy-listen=127.0.0.1:1056 >/var/log/tailscaled.log 2>&1 &
+    --outbound-http-proxy-listen=127.0.0.1:1056 >"$TAILSCALE_LOG" 2>&1 &
 fi
 
-while [ ! -S /var/run/tailscale/tailscaled.sock ]; do
+while [ ! -S "$TAILSCALE_SOCKET" ]; do
   sleep 1
 done
 
-tailscale up \
+tailscale --socket="$TAILSCALE_SOCKET" up \
   --authkey="${TAILSCALE_AUTHKEY}" \
   --hostname="${TAILSCALE_HOSTNAME:-cloudflare-paperclip-sandbox}" \
   ${TAILSCALE_EXTRA_ARGS:-}

@@ -9,13 +9,14 @@ Both deployment modes consume it through the installer scripts in `scripts/`.
 | Claude Code CLI | yes | yes | `CLAUDE_VERSION` | Claude-based agent runs | `tooling/apps.env` |
 | opencode CLI | yes | yes | `OPENCODE_VERSION` | opencode-based agent runs | `tooling/apps.env` |
 | Playwright CLI + Chromium | yes | yes | `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_BROWSER` | Browser smoke tests | `tooling/apps.env` |
-| Docker CLI | yes | yes | Docker apt repository stable channel | Build/run tooling entrypoint | `scripts/install-docker-tools.sh` |
-| Docker Compose v2 | yes | yes | Docker apt repository stable channel | Compose workflows | `scripts/install-docker-tools.sh` |
-| Docker Buildx | yes | yes | Docker apt repository stable channel | Image builds | `scripts/install-docker-tools.sh` |
-| Rootless dockerd | yes | no | Docker apt repository stable channel | Isolated Docker daemon for classic SSH | `scripts/install-docker-tools.sh`, `entrypoint.sh` |
-| Tailscale | yes | yes | Tailscale apt repository stable channel | Tailnet/private provider access | `scripts/install-tailscale.sh` |
+| Docker CLI | yes | yes | Docker apt repository stable channel / `docker:dind-rootless` | Build/run tooling entrypoint | `scripts/install-docker-tools.sh`, `cloudflare/Dockerfile` |
+| Docker Compose v2 | yes | yes | Docker apt repository stable channel / `docker:dind-rootless` | Compose workflows | `scripts/install-docker-tools.sh`, `cloudflare/Dockerfile` |
+| Docker Buildx | yes | yes | Docker apt repository stable channel / `docker:dind-rootless` | Image builds | `scripts/install-docker-tools.sh`, `cloudflare/Dockerfile` |
+| Rootless dockerd | yes | yes | Docker apt repository stable channel / `docker:dind-rootless` | Isolated Docker daemon for agent workloads | `scripts/install-docker-tools.sh`, `entrypoint.sh`, `cloudflare/boot-docker-for-dind.sh` |
+| Tailscale | yes | yes | Tailscale apt repository stable channel / Alpine package | Tailnet/private provider access | `scripts/install-tailscale.sh`, `cloudflare/scripts/install-cloudflare-dind-tools.sh` |
 
-Cloudflare gets Docker CLI/Compose/Buildx for command compatibility, but it
-does not require or start a nested Docker daemon. The classic Docker deployment
-starts rootless dockerd when `DOCKER_RUNTIME=rootless`.
-
+Both deployment modes provide rootless Docker for agent workloads. The classic
+Docker deployment starts rootless dockerd from `entrypoint.sh`; the Cloudflare
+sandbox image follows Cloudflare's Docker-in-Docker guidance by using
+`docker:dind-rootless`, copying in the Cloudflare sandbox runtime, and starting
+`dockerd` from `cloudflare/boot-docker-for-dind.sh`.

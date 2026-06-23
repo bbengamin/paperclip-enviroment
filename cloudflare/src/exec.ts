@@ -83,6 +83,11 @@ function coerceExecuteResult(result: {
   };
 }
 
+function isTransientSessionWatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ENOENT: no such file or directory, watch '\/tmp\/session-/i.test(message);
+}
+
 export async function executeInSandbox(params: BridgeExecuteParams) {
   // The @cloudflare/sandbox SDK's exec() takes a single command string and a
   // narrow option set ({ cwd, env, timeout, ... }) — it does not accept `args`
@@ -113,7 +118,7 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
       stdinFile,
     });
     const fullCommand = `sh -lc ${shellQuote(script)}`;
-    const result = await target.exec(fullCommand, {
+    const execOptions = {
       cwd: "/",
       timeout: params.timeoutMs,
       ...(typeof params.onOutput === "function"
@@ -122,7 +127,15 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
             onOutput: params.onOutput,
           }
         : {}),
-    });
+    };
+    let result;
+    try {
+      result = await target.exec(fullCommand, execOptions);
+    } catch (error) {
+      if (!isTransientSessionWatchError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      result = await target.exec(fullCommand, execOptions);
+    }
     return coerceExecuteResult(result);
   } catch (error) {
     if (isTimeoutError(error)) {

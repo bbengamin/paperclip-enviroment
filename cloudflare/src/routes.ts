@@ -282,6 +282,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         capabilities: {
           reuseLease: true,
           namedSessions: true,
+          dockerInDocker: true,
         previewUrls: false,
       },
     });
