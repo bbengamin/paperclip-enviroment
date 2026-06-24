@@ -26,6 +26,16 @@ function bridgeRequest(pathname: string, body: unknown): Request {
   });
 }
 
+function authenticatedRequest(pathname: string, init: RequestInit = {}): Request {
+  return new Request(`https://bridge.example.test${pathname}`, {
+    ...init,
+    headers: {
+      Authorization: "Bearer secret-token",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
 describe("bridge routes", () => {
   beforeEach(() => {
     vi.mocked(resolveSandbox).mockReset();
@@ -52,9 +62,61 @@ describe("bridge routes", () => {
       capabilities: {
         dockerInDocker: true,
         namedSessions: true,
+        previewUrls: true,
         reuseLease: true,
       },
     });
+  });
+
+  it("proxies preview requests to the selected sandbox port and strips bridge auth", async () => {
+    const containerFetch = vi.fn().mockResolvedValue(new Response("preview ok", { status: 201 }));
+    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
+
+    const response = await handleBridgeRequest(
+      authenticatedRequest("/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?tab=home", {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "X-Paperclip-Environment-Id": "env-1",
+        },
+        body: "hello",
+      }),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(201);
+    await expect(response.text()).resolves.toBe("preview ok");
+    expect(resolveSandbox).toHaveBeenCalledWith(expect.anything(), "pc-run-1-abcd1234", {
+      keepAlive: false,
+      sleepAfter: "10m",
+      normalizeId: true,
+    });
+    expect(containerFetch).toHaveBeenCalledTimes(1);
+    const [proxiedRequest, port] = containerFetch.mock.calls[0] ?? [];
+    expect(port).toBe(27451);
+    expect(proxiedRequest).toBeInstanceOf(Request);
+    expect((proxiedRequest as Request).url).toBe("https://bridge.example.test/dashboard?tab=home");
+    expect((proxiedRequest as Request).headers.get("Authorization")).toBeNull();
+    expect((proxiedRequest as Request).headers.get("X-Paperclip-Environment-Id")).toBeNull();
+    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
+    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Port")).toBe("27451");
+    await expect((proxiedRequest as Request).text()).resolves.toBe("hello");
+  });
+
+  it("rejects malformed preview ports before resolving the sandbox", async () => {
+    const response = await handleBridgeRequest(
+      authenticatedRequest("/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/nope/"),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(400);
+    expect(resolveSandbox).not.toHaveBeenCalled();
   });
 
   it("writes lease sentinels through the named-session exec target", async () => {

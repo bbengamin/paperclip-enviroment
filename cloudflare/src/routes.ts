@@ -56,6 +56,8 @@ interface ExecuteRequestBody {
   sessionId?: string;
 }
 
+const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
+
 const TAILSCALE_PROXY_ENV = {
   ALL_PROXY: "socks5://127.0.0.1:1055",
   all_proxy: "socks5://127.0.0.1:1055",
@@ -103,6 +105,42 @@ function readInteger(value: unknown, fallback: number): number {
 
 function readSessionStrategy(value: unknown): SessionStrategy {
   return value === "default" ? "default" : "named";
+}
+
+function readPort(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
+  return port;
+}
+
+function buildPreviewRequest(request: Request, url: URL, providerLeaseId: string, portSegment: string): Request | Response {
+  const port = readPort(portSegment);
+  if (port === null) {
+    return toErrorResponse(400, "invalid_request", "Preview port must be an integer from 1 to 65535.");
+  }
+
+  const routePrefix = `${PREVIEW_ROUTE_PREFIX}${encodeURIComponent(providerLeaseId)}/${portSegment}`;
+  const rawRemainder = url.pathname.startsWith(routePrefix)
+    ? url.pathname.slice(routePrefix.length)
+    : "";
+  const upstreamUrl = new URL(url.toString());
+  upstreamUrl.pathname = rawRemainder.length > 0 ? rawRemainder : "/";
+
+  const headers = new Headers(request.headers);
+  headers.delete("Authorization");
+  headers.delete("X-Paperclip-Environment-Id");
+  headers.delete("X-Paperclip-Issue-Id");
+  headers.set("X-Paperclip-Preview-Lease-Id", providerLeaseId);
+  headers.set("X-Paperclip-Preview-Port", String(port));
+
+  return new Request(upstreamUrl.toString(), {
+    method: request.method,
+    headers,
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+    redirect: "manual",
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
 }
 
 function requireTailscaleAuthKey(env: BridgeEnv): string {
@@ -283,9 +321,28 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
           reuseLease: true,
           namedSessions: true,
           dockerInDocker: true,
-        previewUrls: false,
+          previewUrls: true,
       },
     });
+  }
+
+  if (pathname.startsWith(PREVIEW_ROUTE_PREFIX)) {
+    const suffix = pathname.slice(PREVIEW_ROUTE_PREFIX.length);
+    const [encodedProviderLeaseId, portSegment] = suffix.split("/", 2);
+    const providerLeaseId = decodeURIComponent(encodedProviderLeaseId ?? "");
+    if (!providerLeaseId || !portSegment) {
+      return toErrorResponse(400, "invalid_request", "Preview URL must include providerLeaseId and port.");
+    }
+
+    const previewRequest = buildPreviewRequest(request, url, providerLeaseId, portSegment);
+    if (previewRequest instanceof Response) return previewRequest;
+
+    const sandbox = await resolveSandbox(env, providerLeaseId, {
+      keepAlive: false,
+      sleepAfter: "10m",
+      normalizeId: true,
+    });
+    return await sandbox.containerFetch(previewRequest, readPort(portSegment)!);
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/probe") {
