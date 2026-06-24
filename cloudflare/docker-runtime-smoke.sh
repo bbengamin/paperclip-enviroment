@@ -9,12 +9,23 @@ else
 fi
 
 DOCKER_BIN="${PAPERCLIP_REAL_DOCKER:-/usr/local/bin/docker-real}"
-network_name="paperclip-bridge-smoke-$$"
+alpine_tag="paperclip-smoke-alpine-$$"
+debian_tag="paperclip-smoke-debian-$$"
+
+cleanup() {
+  "$DOCKER_BIN" image rm "$alpine_tag" "$debian_tag" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
 
 "$DOCKER_BIN" info >/dev/null
-"$DOCKER_BIN" network create "$network_name" >/dev/null
-trap '"$DOCKER_BIN" network rm "$network_name" >/dev/null 2>&1 || true' EXIT INT TERM
-"$DOCKER_BIN" network inspect "$network_name" >/dev/null
+"$DOCKER_BIN" run --rm --network=host alpine:3.20 nslookup deb.debian.org >/dev/null
+"$DOCKER_BIN" build --network=host -t "$alpine_tag" - <<'EOF'
+FROM alpine:3.20
+RUN apk add --no-cache curl
+EOF
+"$DOCKER_BIN" build --network=host -t "$debian_tag" - <<'EOF'
+FROM debian:bookworm
+RUN apt-get update
+EOF
 
-echo "docker bridge network smoke ok"
-
+echo "docker host-network egress smoke ok"
