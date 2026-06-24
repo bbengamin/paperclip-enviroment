@@ -9,23 +9,20 @@ else
 fi
 
 DOCKER_BIN="${PAPERCLIP_REAL_DOCKER:-/usr/local/bin/docker-real}"
-alpine_tag="paperclip-smoke-alpine-$$"
-debian_tag="paperclip-smoke-debian-$$"
-
-cleanup() {
-  "$DOCKER_BIN" image rm "$alpine_tag" "$debian_tag" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT INT TERM
+DOCKER_WRAPPER="${PAPERCLIP_DOCKER_WRAPPER:-/usr/local/bin/docker}"
+network_name="paperclip-bridge-smoke-$$"
+build_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-docker-build-smoke.XXXXXX")"
 
 "$DOCKER_BIN" info >/dev/null
-"$DOCKER_BIN" run --rm --network=host alpine:3.20 nslookup deb.debian.org >/dev/null
-"$DOCKER_BIN" build --network=host -t "$alpine_tag" - <<'EOF'
-FROM alpine:3.20
-RUN apk add --no-cache curl
-EOF
-"$DOCKER_BIN" build --network=host -t "$debian_tag" - <<'EOF'
-FROM debian:bookworm
-RUN apt-get update
+"$DOCKER_BIN" network create "$network_name" >/dev/null
+trap 'rm -rf "$build_dir"; "$DOCKER_BIN" network rm "$network_name" >/dev/null 2>&1 || true' EXIT INT TERM
+"$DOCKER_BIN" network inspect "$network_name" >/dev/null
+
+cat > "$build_dir/Dockerfile" <<'EOF'
+FROM alpine:3.23
+RUN apk add --no-cache ca-certificates >/dev/null
 EOF
 
-echo "docker host-network egress smoke ok"
+"$DOCKER_WRAPPER" build -q "$build_dir" >/dev/null
+
+echo "docker bridge network and build DNS smoke ok"

@@ -578,6 +578,27 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
+          let terminalSent = false;
+          const streamMetadata = {
+            provider: "cloudflare",
+            providerLeaseId: body.providerLeaseId,
+            command: body.command,
+            sessionStrategy,
+            sessionId,
+          };
+          const sendEvent = (type: string, payload: unknown): boolean => {
+            try {
+              controller.enqueue(encoder.encode(encodeSseEvent(type, payload)));
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const sendTerminal = (type: "complete" | "error", payload: unknown): boolean => {
+            if (terminalSent) return true;
+            terminalSent = sendEvent(type, payload);
+            return terminalSent;
+          };
           // Heartbeat keeps the SSE response alive during silent stretches
           // (e.g. npm install downloading silently). SSE comment lines (`:`)
           // are ignored by the client parser but keep the underlying HTTP
@@ -601,17 +622,30 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
               sessionStrategy,
               sessionId,
               onOutput: async (streamName, data) => {
-                controller.enqueue(encoder.encode(encodeSseEvent(streamName, { data })));
+                if (!sendEvent(streamName, { data })) {
+                  throw new Error("Cloudflare sandbox bridge SSE stream closed while forwarding output.");
+                }
               },
             });
-            controller.enqueue(encoder.encode(encodeSseEvent("complete", result)));
+            sendTerminal("complete", { ...result, metadata: streamMetadata });
           } catch (error) {
-            controller.enqueue(encoder.encode(encodeSseEvent("error", {
+            sendTerminal("error", {
               error: error instanceof Error ? error.message : String(error),
-            })));
+              metadata: streamMetadata,
+            });
           } finally {
             clearInterval(heartbeat);
-            controller.close();
+            if (!terminalSent) {
+              sendTerminal("error", {
+                error: "Cloudflare sandbox bridge stream closed before completion event.",
+                metadata: streamMetadata,
+              });
+            }
+            try {
+              controller.close();
+            } catch {
+              // Controller may already be closed by the client/runtime.
+            }
           }
         },
       });

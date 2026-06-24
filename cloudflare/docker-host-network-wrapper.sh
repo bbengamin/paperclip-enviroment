@@ -3,9 +3,34 @@ set -euo pipefail
 
 REAL_DOCKER="${PAPERCLIP_REAL_DOCKER:-/usr/local/bin/docker-real}"
 
-if [[ "${PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK:-1}" == "0" ]]; then
-  exec "$REAL_DOCKER" "$@"
-fi
+network_mode() {
+  if [[ -n "${PAPERCLIP_CLOUDFLARE_DOCKER_NETWORK_MODE:-}" ]]; then
+    printf '%s\n' "$PAPERCLIP_CLOUDFLARE_DOCKER_NETWORK_MODE"
+    return
+  fi
+
+  case "${PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK:-}" in
+    1|true|TRUE|yes|YES) printf '%s\n' "all-host" ;;
+    0|false|FALSE|no|NO) printf '%s\n' "bridge" ;;
+    *) printf '%s\n' "build-host" ;;
+  esac
+}
+
+NETWORK_MODE="$(network_mode)"
+
+build_uses_host_network() {
+  case "$NETWORK_MODE" in
+    build-host|all-host) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+runtime_uses_host_network() {
+  case "$NETWORK_MODE" in
+    all-host) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 has_network_flag() {
   local arg
@@ -20,7 +45,7 @@ has_network_flag() {
 run_with_host_network() {
   local subcommand="$1"
   shift
-  if has_network_flag "$@"; then
+  if ! build_uses_host_network || has_network_flag "$@"; then
     exec "$REAL_DOCKER" "$subcommand" "$@"
   fi
   exec "$REAL_DOCKER" "$subcommand" --network=host "$@"
@@ -40,16 +65,21 @@ write_host_network_compose_file() {
 const fs = require("fs");
 const input = fs.readFileSync(0, "utf8");
 const config = JSON.parse(input);
+const runtimeHost = process.env.PAPERCLIP_COMPOSE_RUNTIME_HOST_NETWORK === "1";
 for (const service of Object.values(config.services || {})) {
-  service.network_mode = "host";
-  delete service.networks;
-  delete service.ports;
-  delete service.expose;
   if (service.build && typeof service.build === "object") {
     service.build.network = "host";
   }
+  if (runtimeHost) {
+    service.network_mode = "host";
+    delete service.networks;
+    delete service.ports;
+    delete service.expose;
+  }
 }
-delete config.networks;
+if (runtimeHost) {
+  delete config.networks;
+}
 process.stdout.write(JSON.stringify(config, null, 2));
 ' > "$output_file"
 }
@@ -111,14 +141,18 @@ run_compose_with_host_network() {
     esac
   done
 
-  if [[ -z "$subcommand" ]] || ! compose_needs_host_network "$subcommand"; then
-    exec "$REAL_DOCKER" compose "${config_args[@]}" "$subcommand" "${command_args[@]}"
+  if [[ -z "$subcommand" ]] || ! compose_needs_host_network "$subcommand" || ! build_uses_host_network; then
+    exec "$REAL_DOCKER" compose ${config_args[@]+"${config_args[@]}"} "$subcommand" ${command_args[@]+"${command_args[@]}"}
   fi
 
   local rewritten_file
   rewritten_file="$(mktemp "${TMPDIR:-/tmp}/paperclip-compose-host-network.XXXXXX")"
-  write_host_network_compose_file "$rewritten_file" "${config_args[@]}"
-  exec "$REAL_DOCKER" compose "${runtime_args[@]}" -f "$rewritten_file" "$subcommand" "${command_args[@]}"
+  if runtime_uses_host_network; then
+    PAPERCLIP_COMPOSE_RUNTIME_HOST_NETWORK=1 write_host_network_compose_file "$rewritten_file" "${config_args[@]}"
+  else
+    PAPERCLIP_COMPOSE_RUNTIME_HOST_NETWORK=0 write_host_network_compose_file "$rewritten_file" "${config_args[@]}"
+  fi
+  exec "$REAL_DOCKER" compose ${runtime_args[@]+"${runtime_args[@]}"} -f "$rewritten_file" "$subcommand" ${command_args[@]+"${command_args[@]}"}
 }
 
 case "${1:-}" in
@@ -129,7 +163,7 @@ case "${1:-}" in
   buildx)
     if [[ "${2:-}" == "build" ]]; then
       shift 2
-      if has_network_flag "$@"; then
+      if ! build_uses_host_network || has_network_flag "$@"; then
         exec "$REAL_DOCKER" buildx build "$@"
       fi
       exec "$REAL_DOCKER" buildx build --network=host "$@"
@@ -140,7 +174,10 @@ case "${1:-}" in
     ;;
   run)
     shift
-    run_with_host_network run "$@"
+    if runtime_uses_host_network; then
+      run_with_host_network run "$@"
+    fi
+    exec "$REAL_DOCKER" run "$@"
     ;;
 esac
 

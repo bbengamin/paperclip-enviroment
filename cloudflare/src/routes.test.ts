@@ -246,6 +246,41 @@ describe("bridge routes", () => {
     expect(body).toContain("event: complete");
   });
 
+  it("streams a terminal error event when sandbox exec throws", async () => {
+    const sessionExec = vi.fn().mockRejectedValue(new Error("sandbox process disappeared"));
+    const sandbox = {
+      getSession: vi.fn().mockResolvedValue({ exec: sessionExec }),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox).mockResolvedValue(sandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/exec", {
+        providerLeaseId: "pc-run-1-abcd1234",
+        command: "codex",
+        args: ["exec", "-"],
+        sessionStrategy: "named",
+        sessionId: "paperclip",
+        streamOutput: true,
+      }),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        TAILSCALE_AUTHKEY: "tskey-test",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/event-stream");
+    const body = await response.text();
+    expect(body).toContain("event: error");
+    expect(body).toContain("sandbox process disappeared");
+    expect(body).not.toContain("event: complete");
+  });
+
   it("injects userspace Tailscale proxy env into sandbox exec commands", async () => {
     const sessionExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const sandbox = {
