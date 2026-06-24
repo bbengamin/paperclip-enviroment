@@ -8,7 +8,7 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
-ENV PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=1
+ENV PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=0
 
 COPY --from=cloudflare-sandbox /container-server/sandbox /sandbox
 
@@ -18,18 +18,21 @@ COPY --from=cloudflare-sandbox /container-server/sandbox /sandbox
 COPY .docker-tooling /tmp/paperclip-tooling
 COPY scripts/install-cloudflare-dind-tools.sh /tmp/paperclip-tooling/install-cloudflare-dind-tools.sh
 
-RUN chmod 755 /tmp/paperclip-tooling/*.sh \
+RUN sed -i 's/\r$//' /tmp/paperclip-tooling/*.sh \
+  && chmod 755 /tmp/paperclip-tooling/*.sh \
   && /tmp/paperclip-tooling/install-cloudflare-dind-tools.sh \
   && rm -rf /tmp/paperclip-tooling
 
 COPY tailscale-up.sh /usr/local/bin/tailscale-up
 COPY boot-docker-for-dind.sh /home/rootless/boot-docker-for-dind.sh
 COPY docker-host-network-wrapper.sh /usr/local/bin/docker-host-network-wrapper
-RUN sed -i 's/\r$//' /usr/local/bin/tailscale-up /home/rootless/boot-docker-for-dind.sh \
+COPY docker-runtime-smoke.sh /usr/local/bin/docker-runtime-smoke
+RUN sed -i 's/\r$//' /usr/local/bin/tailscale-up /home/rootless/boot-docker-for-dind.sh /usr/local/bin/docker-runtime-smoke \
   && if [ ! -e /usr/local/bin/docker-real ]; then mv /usr/local/bin/docker /usr/local/bin/docker-real; fi \
   && mv /usr/local/bin/docker-host-network-wrapper /usr/local/bin/docker \
   && chmod +x /usr/local/bin/docker \
   && chmod +x /usr/local/bin/tailscale-up \
+  && chmod +x /usr/local/bin/docker-runtime-smoke \
   && chmod +x /home/rootless/boot-docker-for-dind.sh \
   && mkdir -p /home/rootless/.docker-run /workspace \
   && chmod 700 /home/rootless/.docker-run \

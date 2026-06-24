@@ -60,6 +60,7 @@ describe("bridge routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       capabilities: {
+        dockerBridgeNetworkSmoke: true,
         dockerInDocker: true,
         namedSessions: true,
         previewUrls: true,
@@ -153,7 +154,7 @@ describe("bridge routes", () => {
     // Both calls use a single command string — the SDK's exec API ignores
     // any `args` or `stdin` option, so the bridge folds them into the
     // command line itself.
-    expect(sessionExec).toHaveBeenCalledTimes(3);
+    expect(sessionExec).toHaveBeenCalledTimes(4);
     for (const call of sessionExec.mock.calls) {
       const [commandArg, optionsArg] = call;
       expect(typeof commandArg).toBe("string");
@@ -163,9 +164,10 @@ describe("bridge routes", () => {
       expect(optionsArg).not.toHaveProperty("stdin");
     }
     expect(sessionExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    expect(sessionExec.mock.calls[1]?.[0]).toContain("mkdir");
-    expect(sessionExec.mock.calls[1]?.[0]).toContain("/workspace/paperclip");
-    expect(sessionExec.mock.calls[2]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
+    expect(sessionExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
+    expect(sessionExec.mock.calls[2]?.[0]).toContain("mkdir");
+    expect(sessionExec.mock.calls[2]?.[0]).toContain("/workspace/paperclip");
+    expect(sessionExec.mock.calls[3]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
   });
 
   it("checks lease sentinels through the named-session exec target on resume", async () => {
@@ -197,7 +199,8 @@ describe("bridge routes", () => {
     expect(response.status).toBe(200);
     expect(sandbox.readFile).not.toHaveBeenCalled();
     expect(sessionExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    const [commandArg, optionsArg] = sessionExec.mock.calls[1] ?? [];
+    expect(sessionExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
+    const [commandArg, optionsArg] = sessionExec.mock.calls[2] ?? [];
     expect(typeof commandArg).toBe("string");
     expect(commandArg).toMatch(/^sh -lc /);
     expect(commandArg).toContain("test -s");
