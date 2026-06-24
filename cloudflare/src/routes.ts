@@ -326,16 +326,16 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
   if (request.method === "GET" && pathname === "/api/paperclip-sandbox/v1/health") {
     return toJsonResponse({
       ok: true,
-        provider: "cloudflare",
-        bridgeVersion: "0.1.0",
-        tailscaleRequired: true,
-        tailscaleConfigured: Boolean(env.TAILSCALE_AUTHKEY?.trim()),
-        capabilities: {
-          reuseLease: true,
-          namedSessions: true,
-          dockerInDocker: true,
-          dockerBridgeNetworkSmoke: true,
-          previewUrls: true,
+      provider: "cloudflare",
+      bridgeVersion: "0.1.0",
+      tailscaleRequired: true,
+      tailscaleConfigured: Boolean(env.TAILSCALE_AUTHKEY?.trim()),
+      capabilities: {
+        reuseLease: true,
+        namedSessions: true,
+        dockerInDocker: true,
+        dockerHostNetworkSmoke: true,
+        previewUrls: true,
       },
     });
   }

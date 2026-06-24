@@ -60,7 +60,7 @@ describe("bridge routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       capabilities: {
-        dockerBridgeNetworkSmoke: true,
+        dockerHostNetworkSmoke: true,
         dockerInDocker: true,
         namedSessions: true,
         previewUrls: true,

@@ -46,22 +46,22 @@ image follows Cloudflare's documented rootless Docker-in-Docker pattern:
 - entrypoint: `/sandbox`
 - command: `/home/rootless/boot-docker-for-dind.sh`
 
-Nested Docker is rootless and must not rely on privileged containers.
-The image now tests normal Docker bridge-network creation during lease setup.
-If that startup smoke passes, project Compose stacks can try their normal
-network/service dependency model first:
+Nested Docker is rootless and must not rely on privileged containers or
+iptables-based bridge NAT. Cloudflare's Docker-in-Docker guidance requires
+host networking for traffic in and out of inner Docker containers, so the image
+defaults nested Docker commands to host networking:
 
 ```bash
-docker build -t app .
-docker run --rm app
+docker build --network=host -t app .
+docker run --network=host --rm app
 docker compose --project-name paperclip up
 ```
 
-The Cloudflare image still installs a small Docker CLI wrapper that can force
-nested `docker build`, `docker buildx build`, `docker run`, and common
-`docker compose` execution paths to host networking. Use it only as a fallback
-by setting `PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=1` inside a sandbox
-command.
+The Cloudflare image installs a small Docker CLI wrapper that defaults nested
+`docker build`, `docker buildx build`, `docker run`, and common
+`docker compose` execution paths to host networking. Set
+`PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=0` inside a sandbox command only when
+you deliberately want to bypass the wrapper and test normal Docker networking.
 
 Lease setup also runs a quick Docker startup smoke test:
 
@@ -70,9 +70,21 @@ docker-runtime-smoke
 ```
 
 The smoke test calls the real Docker CLI directly, verifies `docker info`, and
-creates/removes a normal Docker bridge network. If Cloudflare does not allow the
-runtime to create bridge networks, the lease fails early instead of letting an
-agent discover the problem deep inside a project `docker compose up`.
+checks host-network DNS/package-repository egress with both Alpine and Debian
+build containers. If Cloudflare cannot resolve package repositories from inner
+Docker builds, the lease fails early instead of letting an agent discover the
+problem deep inside a project `docker compose up`.
+
+## Preview URLs
+
+The deployed Worker URL is for the Paperclip bridge API. It does not affect
+Docker build or container egress.
+
+For future application previews on a `workers.dev` deployment, prefer
+`sandbox.tunnels.get(port)` because it creates a Cloudflare Tunnel URL without
+requiring wildcard DNS. Use `sandbox.exposePort(port, { hostname })` only after
+the bridge is deployed on a custom domain that supports wildcard preview
+hostnames.
 
 Images and containers created inside a Cloudflare sandbox are ephemeral and may
 be lost when the sandbox sleeps or is destroyed.
