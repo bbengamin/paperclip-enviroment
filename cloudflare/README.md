@@ -77,6 +77,25 @@ agent discover the problem deep inside a project `docker compose up`.
 Images and containers created inside a Cloudflare sandbox are ephemeral and may
 be lost when the sandbox sleeps or is destroyed.
 
+## Preview Proxy
+
+The bridge can proxy HTTP requests from the Worker to a running sandbox port:
+
+```text
+https://<bridge-host>/api/paperclip-sandbox/v1/preview/<providerLeaseId>/<port>/<path>
+```
+
+Example:
+
+```text
+https://paperclip-cloudflare-sandbox-bridge.example.workers.dev/api/paperclip-sandbox/v1/preview/pc-env-.../27451/
+```
+
+The preview proxy uses Cloudflare's container request forwarding rather than a
+public container IP. Requests must include the bridge bearer token; the bridge
+removes that `Authorization` header before forwarding the request to the
+sandboxed app.
+
 ## GitHub Actions Deployment
 
 The Cloudflare bridge workflow validates pull requests and deploys
