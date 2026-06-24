@@ -205,6 +205,19 @@ async function ensureWorkspace(
   requireZeroExit(`ensure workspace ${options.remoteCwd}`, result);
 }
 
+async function ensureDockerRuntime(
+  sandbox: CloudflareSandbox,
+  options: {
+    remoteCwd: string;
+    sessionStrategy: SessionStrategy;
+    sessionId: string;
+    timeoutMs: number;
+  },
+) {
+  const result = await execLeaseUtility(sandbox, options, "docker-runtime-smoke", [], "/");
+  requireZeroExit("docker runtime smoke", result);
+}
+
 async function writeSentinel(
   sandbox: CloudflareSandbox,
   input: {
@@ -283,6 +296,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
           reuseLease: true,
           namedSessions: true,
           dockerInDocker: true,
+          dockerBridgeNetworkSmoke: true,
         previewUrls: false,
       },
     });
@@ -308,6 +322,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     await applySandboxKeepAlive(sandbox, keepAlive);
     try {
       await ensureTailscale(sandbox, env, { providerLeaseId: sandboxId, timeoutMs, sessionStrategy, sessionId });
+      await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
       await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
       const result = await executeInSandbox({
         sandbox,
@@ -362,6 +377,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     try {
       await applySandboxKeepAlive(sandbox, keepAlive);
       await ensureTailscale(sandbox, env, { providerLeaseId, timeoutMs, sessionStrategy, sessionId });
+      await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
       await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
       await writeSentinel(sandbox, {
         providerLeaseId,
@@ -422,6 +438,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       sessionStrategy,
       sessionId,
     });
+    await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
 
     if (!(await verifySentinel(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs }))) {
       return toErrorResponse(409, "sandbox_state_lost", "Cloudflare sandbox state is no longer available.");
