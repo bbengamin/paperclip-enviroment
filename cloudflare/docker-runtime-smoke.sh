@@ -13,9 +13,15 @@ DOCKER_WRAPPER="${PAPERCLIP_DOCKER_WRAPPER:-/usr/local/bin/docker}"
 network_name="paperclip-bridge-smoke-$$"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-docker-build-smoke.XXXXXX")"
 
+cleanup() {
+  rm -rf "$build_dir"
+  "$DOCKER_BIN" network rm "$network_name" >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT INT TERM
+
 "$DOCKER_BIN" info >/dev/null
 "$DOCKER_BIN" network create "$network_name" >/dev/null
-trap 'rm -rf "$build_dir"; "$DOCKER_BIN" network rm "$network_name" >/dev/null 2>&1 || true' EXIT INT TERM
 "$DOCKER_BIN" network inspect "$network_name" >/dev/null
 
 cat > "$build_dir/Dockerfile" <<'EOF'
@@ -25,4 +31,4 @@ EOF
 
 "$DOCKER_WRAPPER" build -q "$build_dir" >/dev/null
 
-echo "docker bridge network and build DNS smoke ok"
+echo "docker lease-readiness smoke ok: daemon, inner network, and tiny package-repository build are available"

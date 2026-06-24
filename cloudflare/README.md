@@ -63,17 +63,24 @@ The Cloudflare image installs a small Docker CLI wrapper that defaults nested
 `PAPERCLIP_CLOUDFLARE_DOCKER_HOST_NETWORK=0` inside a sandbox command only when
 you deliberately want to bypass the wrapper and test normal Docker networking.
 
-Lease setup also runs a quick Docker startup smoke test:
+Lease setup also runs a quick Docker lease-readiness smoke test:
 
 ```bash
 docker-runtime-smoke
 ```
 
-The smoke test calls the real Docker CLI directly, verifies `docker info`, and
-checks host-network DNS/package-repository egress with both Alpine and Debian
-build containers. If Cloudflare cannot resolve package repositories from inner
-Docker builds, the lease fails early instead of letting an agent discover the
-problem deep inside a project `docker compose up`.
+The smoke test is intentionally small and project-agnostic. It verifies that the
+Docker daemon is reachable, a throwaway inner Docker network can be created and
+inspected, and a tiny Alpine image build can reach package repositories through
+the Cloudflare Docker wrapper. It does not run project setup commands, frontend
+installs, browser tests, or artifact collection. Those remain the responsibility
+of the Paperclip task and the agent running inside the acquired sandbox.
+
+Cloudflare sandbox files, Docker images, containers, and local reports are
+ephemeral. If a task produces logs, screenshots, Playwright reports, or smoke
+summaries that reviewers need after the sandbox is destroyed, the task must post
+or attach that evidence to Paperclip before handoff. Writing evidence only under
+`/workspace` is not durable review evidence.
 
 ## Preview URLs
 

@@ -36,6 +36,15 @@ function authenticatedRequest(pathname: string, init: RequestInit = {}): Request
   });
 }
 
+function expectNoProjectSmokeCommands(sessionExec: ReturnType<typeof vi.fn>) {
+  const commands = sessionExec.mock.calls.map((call) => String(call[0] ?? "")).join("\n");
+  expect(commands).not.toContain("./setup-local");
+  expect(commands).not.toContain("setup-local");
+  expect(commands).not.toContain("./smoke-e2e");
+  expect(commands).not.toContain("smoke-e2e");
+  expect(commands).not.toContain("npm install");
+}
+
 describe("bridge routes", () => {
   beforeEach(() => {
     vi.mocked(resolveSandbox).mockReset();
@@ -60,6 +69,7 @@ describe("bridge routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       capabilities: {
+        dockerRuntimeSmoke: true,
         dockerHostNetworkSmoke: true,
         dockerInDocker: true,
         namedSessions: true,
@@ -168,6 +178,7 @@ describe("bridge routes", () => {
     expect(sessionExec.mock.calls[2]?.[0]).toContain("mkdir");
     expect(sessionExec.mock.calls[2]?.[0]).toContain("/workspace/paperclip");
     expect(sessionExec.mock.calls[3]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
+    expectNoProjectSmokeCommands(sessionExec);
   });
 
   it("checks lease sentinels through the named-session exec target on resume", async () => {
@@ -200,6 +211,7 @@ describe("bridge routes", () => {
     expect(sandbox.readFile).not.toHaveBeenCalled();
     expect(sessionExec.mock.calls[0]?.[0]).toContain("tailscale-up");
     expect(sessionExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
+    expectNoProjectSmokeCommands(sessionExec);
     const [commandArg, optionsArg] = sessionExec.mock.calls[2] ?? [];
     expect(typeof commandArg).toBe("string");
     expect(commandArg).toMatch(/^sh -lc /);

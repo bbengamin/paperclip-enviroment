@@ -334,6 +334,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         reuseLease: true,
         namedSessions: true,
         dockerInDocker: true,
+        dockerRuntimeSmoke: true,
         dockerHostNetworkSmoke: true,
         previewUrls: true,
       },
