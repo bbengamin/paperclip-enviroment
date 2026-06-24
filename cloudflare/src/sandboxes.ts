@@ -18,7 +18,7 @@ export interface BridgeLeaseConfig {
 
 export const DEFAULT_REMOTE_CWD = "/workspace/paperclip";
 export const DEFAULT_SESSION_ID = "paperclip";
-export const DEFAULT_TIMEOUT_MS = 300_000;
+export const DEFAULT_TIMEOUT_MS = 1_800_000;
 export const LEASE_SENTINEL_FILE = ".paperclip-lease.json";
 
 export function toJsonResponse(body: unknown, status = 200): Response {
