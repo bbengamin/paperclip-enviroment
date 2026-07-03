@@ -165,12 +165,12 @@ async function verifySignedPreviewUrl(
   providerLeaseId: string,
   port: number,
 ): Promise<Response | null> {
-  const secret = env.PAPERCLIP_PREVIEW_SIGNING_SECRET?.trim();
+  const secret = env.PREVIEW_SIGNING_SECRET?.trim();
   if (!secret) {
     return toErrorResponse(
       503,
       "preview_signing_unavailable",
-      "PAPERCLIP_PREVIEW_SIGNING_SECRET is required for signed preview links.",
+      "PREVIEW_SIGNING_SECRET is required for signed preview links.",
     );
   }
 
