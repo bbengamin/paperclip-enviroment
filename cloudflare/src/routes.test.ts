@@ -226,10 +226,11 @@ describe("bridge routes", () => {
     expect(resolveSandbox).not.toHaveBeenCalled();
   });
 
-  it("writes lease sentinels through the named-session exec target", async () => {
-    const sessionExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+  it("writes lease sentinels through direct sandbox exec during bootstrap", async () => {
+    const sandboxExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const sandbox = {
-      getSession: vi.fn().mockResolvedValue({ exec: sessionExec }),
+      exec: sandboxExec,
+      getSession: vi.fn(),
       createSession: vi.fn(),
       writeFile: vi.fn(),
       deleteFile: vi.fn(),
@@ -254,14 +255,15 @@ describe("bridge routes", () => {
 
     expect(response.status).toBe(200);
     // Sentinel write must NOT use sandbox.writeFile (sandbox-level race);
-    // it goes through the same session as the mkdir.
+    // it goes through exec so the shell creates the workspace atomically.
     expect(sandbox.writeFile).not.toHaveBeenCalled();
+    expect(sandbox.getSession).not.toHaveBeenCalled();
 
     // Both calls use a single command string — the SDK's exec API ignores
     // any `args` or `stdin` option, so the bridge folds them into the
     // command line itself.
-    expect(sessionExec).toHaveBeenCalledTimes(4);
-    for (const call of sessionExec.mock.calls) {
+    expect(sandboxExec).toHaveBeenCalledTimes(4);
+    for (const call of sandboxExec.mock.calls) {
       const [commandArg, optionsArg] = call;
       expect(typeof commandArg).toBe("string");
       expect(commandArg).toMatch(/^sh -lc /);
@@ -269,17 +271,18 @@ describe("bridge routes", () => {
       expect(optionsArg).not.toHaveProperty("args");
       expect(optionsArg).not.toHaveProperty("stdin");
     }
-    expect(sessionExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    expect(sessionExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
-    expect(sessionExec.mock.calls[2]?.[0]).toContain("mkdir");
-    expect(sessionExec.mock.calls[2]?.[0]).toContain("/workspace/paperclip");
-    expect(sessionExec.mock.calls[3]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
+    expect(sandboxExec.mock.calls[0]?.[0]).toContain("tailscale-up");
+    expect(sandboxExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
+    expect(sandboxExec.mock.calls[2]?.[0]).toContain("mkdir");
+    expect(sandboxExec.mock.calls[2]?.[0]).toContain("/workspace/paperclip");
+    expect(sandboxExec.mock.calls[3]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
   });
 
-  it("checks lease sentinels through the named-session exec target on resume", async () => {
-    const sessionExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+  it("checks lease sentinels through direct sandbox exec on resume", async () => {
+    const sandboxExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const sandbox = {
-      getSession: vi.fn().mockResolvedValue({ exec: sessionExec }),
+      exec: sandboxExec,
+      getSession: vi.fn(),
       createSession: vi.fn(),
       readFile: vi.fn(),
       writeFile: vi.fn(),
@@ -304,9 +307,10 @@ describe("bridge routes", () => {
 
     expect(response.status).toBe(200);
     expect(sandbox.readFile).not.toHaveBeenCalled();
-    expect(sessionExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    expect(sessionExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
-    const [commandArg, optionsArg] = sessionExec.mock.calls[2] ?? [];
+    expect(sandbox.getSession).not.toHaveBeenCalled();
+    expect(sandboxExec.mock.calls[0]?.[0]).toContain("tailscale-up");
+    expect(sandboxExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
+    const [commandArg, optionsArg] = sandboxExec.mock.calls[2] ?? [];
     expect(typeof commandArg).toBe("string");
     expect(commandArg).toMatch(/^sh -lc /);
     expect(commandArg).toContain("test -s");

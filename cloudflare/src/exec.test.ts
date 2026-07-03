@@ -92,6 +92,7 @@ describe("bridge exec", () => {
         .mockResolvedValueOnce({ exec: secondExec }),
       writeFile: vi.fn(),
       deleteFile: vi.fn(),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
     } as const;
 
     const result = await executeInSandbox({
@@ -104,8 +105,34 @@ describe("bridge exec", () => {
 
     expect(result).toMatchObject({ exitCode: 0, stdout: "ok\n" });
     expect(sandbox.getSession).toHaveBeenCalledTimes(2);
+    expect(sandbox.deleteSession).toHaveBeenCalledWith("paperclip");
     expect(firstExec).toHaveBeenCalledTimes(1);
     expect(secondExec).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries transient default exec watcher ENOENT failures without deleting a session", async () => {
+    const exec = vi.fn()
+      .mockRejectedValueOnce(new Error("ENOENT: no such file or directory, watch '/tmp/session-sandbox-pc-probe-1-123'"))
+      .mockResolvedValueOnce({ exitCode: 0, stdout: "ok\n", stderr: "" });
+    const sandbox = {
+      exec,
+      getSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      deleteSession: vi.fn(),
+    } as const;
+
+    const result = await executeInSandbox({
+      sandbox: sandbox as never,
+      command: "pwd",
+      sessionStrategy: "default",
+      timeoutMs: 5_000,
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: "ok\n" });
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(sandbox.getSession).not.toHaveBeenCalled();
+    expect(sandbox.deleteSession).not.toHaveBeenCalled();
   });
 
   it("stages stdin through a sandbox temp file and redirects from it", async () => {
