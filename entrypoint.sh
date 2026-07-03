@@ -107,6 +107,14 @@ elif [ "$DOCKER_RUNTIME" = "rootless" ]; then
   echo "DOCKER_RUNTIME=rootless but dockerd-rootless.sh is not installed; skipping Docker startup" >&2
 fi
 
+# --- Paperclip signed preview gateway --------------------------------------
+# The gateway is intentionally non-fatal: missing signing config disables usable
+# signed previews but must not prevent SSH/task execution from starting.
+if [ "${PAPERCLIP_PREVIEW_GATEWAY_ENABLED:-1}" = "1" ]; then
+  echo "starting Paperclip preview gateway on port ${PAPERCLIP_PREVIEW_GATEWAY_PORT:-3999}" >&2
+  node /usr/local/bin/paperclip-preview-gateway.mjs >/var/log/paperclip-preview-gateway.log 2>&1 &
+fi
+
 mkdir -p "$HOST_KEYS_DIR"
 chmod 700 "$HOST_KEYS_DIR"
 
