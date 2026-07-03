@@ -108,6 +108,24 @@ public container IP. Requests must include the bridge bearer token; the bridge
 removes that `Authorization` header before forwarding the request to the
 sandboxed app.
 
+Browser-clickable preview links may use the shared signed preview URL contract
+instead of a bearer header:
+
+```text
+https://<bridge-host>/api/paperclip-sandbox/v1/preview/<providerLeaseId>/<port>/<path>?pc_issue=<issue>&pc_run=<run>&pc_exp=<unix>&pc_sig=<sig>
+```
+
+Signed preview URLs use `HMAC-SHA256` with the `paperclip-preview-v1` canonical
+payload from `RL-1405`. The Worker verifies signatures with the
+`PAPERCLIP_PREVIEW_SIGNING_SECRET` secret, derives the target from
+`providerLeaseId`, rejects expired or invalid links before resolving the
+sandbox, and strips signing query parameters plus bridge auth headers before
+forwarding to the sandboxed app.
+
+Non-preview bridge routes remain bearer-token only. Cloudflare preview links are
+still operationally temporary: even a valid signature can stop working when the
+sandbox sleeps or is destroyed.
+
 ## GitHub Actions Deployment
 
 The Cloudflare bridge workflow validates pull requests and deploys

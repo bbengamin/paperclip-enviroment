@@ -6,6 +6,7 @@ services:
     container_name: ubuntu-ssh
     ports:
       - "${HOST_BIND_IP}:2222:22"
+      - "${HOST_BIND_IP}:${PAPERCLIP_PREVIEW_GATEWAY_HOST_PORT:-3999}:3999"
     environment:
       CODEX_HOME: /home/${SSH_USER:-guest}/.codex
       SSH_USER: ${SSH_USER:-guest}
@@ -15,6 +16,11 @@ services:
       WORKSPACE_DIR: /workspace
       ANTHROPIC_BASE_URL:
       ANTHROPIC_AUTH_TOKEN:
+      PAPERCLIP_PREVIEW_GATEWAY_ENABLED: ${PAPERCLIP_PREVIEW_GATEWAY_ENABLED:-1}
+      PAPERCLIP_PREVIEW_GATEWAY_PORT: 3999
+      PAPERCLIP_PREVIEW_ENVIRONMENT_ID: ${PAPERCLIP_PREVIEW_ENVIRONMENT_ID:-}
+      PAPERCLIP_PREVIEW_SIGNING_SECRET: ${PAPERCLIP_PREVIEW_SIGNING_SECRET:-}
+      PAPERCLIP_PREVIEW_ALLOWED_PORTS: ${PAPERCLIP_PREVIEW_ALLOWED_PORTS:-3000,3001,4000,4200,5000,5173,5174,8000,8080,9000}
       # Docker-in-Docker: the environment runs its own rootless dockerd and
       # exposes it on a per-user socket. DOCKER_RUNTIME=off disables startup.
       DOCKER_RUNTIME: ${DOCKER_RUNTIME:-rootless}

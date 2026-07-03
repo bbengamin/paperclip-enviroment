@@ -114,6 +114,106 @@ function readPort(value: string): number | null {
   return port;
 }
 
+function base64Url(bytes: ArrayBuffer): string {
+  let raw = "";
+  for (const byte of new Uint8Array(bytes)) raw += String.fromCharCode(byte);
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function hmacSha256Base64Url(secret: string, payload: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return base64Url(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
+}
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const left = encoder.encode(a);
+  const right = encoder.encode(b);
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i++) diff |= left[i]! ^ right[i]!;
+  return diff === 0;
+}
+
+function canonicalPreviewPayload(input: {
+  target: string;
+  issue: string;
+  run: string;
+  port: number;
+  exp: string;
+}): string {
+  return [
+    "paperclip-preview-v1",
+    `target=${input.target}`,
+    `issue=${input.issue}`,
+    `run=${input.run}`,
+    `port=${input.port}`,
+    `exp=${input.exp}`,
+  ].join("\n");
+}
+
+async function verifySignedPreviewUrl(
+  env: BridgeEnv,
+  url: URL,
+  providerLeaseId: string,
+  port: number,
+): Promise<Response | null> {
+  const secret = env.PAPERCLIP_PREVIEW_SIGNING_SECRET?.trim();
+  if (!secret) {
+    return toErrorResponse(
+      503,
+      "preview_signing_unavailable",
+      "PAPERCLIP_PREVIEW_SIGNING_SECRET is required for signed preview links.",
+    );
+  }
+
+  const issue = url.searchParams.get("pc_issue");
+  const run = url.searchParams.get("pc_run");
+  const exp = url.searchParams.get("pc_exp");
+  const sig = url.searchParams.get("pc_sig");
+  if (!issue || !run || !exp || !sig) {
+    return toErrorResponse(401, "unauthorized", "Missing signed preview query parameters.");
+  }
+
+  if (!/^\d+$/.test(exp)) {
+    return toErrorResponse(401, "unauthorized", "Invalid preview expiry.");
+  }
+
+  const expSeconds = Number(exp);
+  if (!Number.isSafeInteger(expSeconds) || expSeconds <= 0) {
+    return toErrorResponse(401, "unauthorized", "Invalid preview expiry.");
+  }
+  if (expSeconds <= Math.floor(Date.now() / 1000)) {
+    return toErrorResponse(410, "preview_expired", "Signed preview link has expired.");
+  }
+
+  const payload = canonicalPreviewPayload({ target: providerLeaseId, issue, run, port, exp });
+  const expected = await hmacSha256Base64Url(secret, payload);
+  if (!timingSafeStringEqual(expected, sig)) {
+    return toErrorResponse(401, "unauthorized", "Invalid signed preview URL.");
+  }
+  return null;
+}
+
+function hasSignedPreviewParams(url: URL): boolean {
+  return ["pc_issue", "pc_run", "pc_exp", "pc_sig"].some((param) => url.searchParams.has(param));
+}
+
+function stripPreviewQueryParams(url: URL): void {
+  const keys: string[] = [];
+  url.searchParams.forEach((_value, key) => keys.push(key));
+  for (const key of keys) {
+    if (key.startsWith("pc_")) url.searchParams.delete(key);
+  }
+}
+
 function buildPreviewRequest(request: Request, url: URL, providerLeaseId: string, portSegment: string): Request | Response {
   const port = readPort(portSegment);
   if (port === null) {
@@ -126,6 +226,7 @@ function buildPreviewRequest(request: Request, url: URL, providerLeaseId: string
     : "";
   const upstreamUrl = new URL(url.toString());
   upstreamUrl.pathname = rawRemainder.length > 0 ? rawRemainder : "/";
+  stripPreviewQueryParams(upstreamUrl);
 
   const headers = new Headers(request.headers);
   headers.delete("Authorization");
@@ -316,12 +417,13 @@ async function verifySentinel(
 }
 
 export async function handleBridgeRequest(request: Request, env: BridgeEnv): Promise<Response> {
-  if (!(await isAuthorizedRequest(request, env.BRIDGE_AUTH_TOKEN))) {
-    return toErrorResponse(401, "unauthorized", "Missing or invalid bridge bearer token.");
-  }
-
   const url = new URL(request.url);
   const pathname = url.pathname.replace(/\/+$/, "");
+
+  const isAuthorized = await isAuthorizedRequest(request, env.BRIDGE_AUTH_TOKEN);
+  if (!isAuthorized && !pathname.startsWith(PREVIEW_ROUTE_PREFIX)) {
+    return toErrorResponse(401, "unauthorized", "Missing or invalid bridge bearer token.");
+  }
 
   if (request.method === "GET" && pathname === "/api/paperclip-sandbox/v1/health") {
     return toJsonResponse({
@@ -348,6 +450,19 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       return toErrorResponse(400, "invalid_request", "Preview URL must include providerLeaseId and port.");
     }
 
+    const port = readPort(portSegment);
+    if (port === null) {
+      return toErrorResponse(400, "invalid_request", "Preview port must be an integer from 1 to 65535.");
+    }
+
+    if (!isAuthorized) {
+      if (!hasSignedPreviewParams(url)) {
+        return toErrorResponse(401, "unauthorized", "Missing bridge bearer token or signed preview query parameters.");
+      }
+      const rejected = await verifySignedPreviewUrl(env, url, providerLeaseId, port);
+      if (rejected) return rejected;
+    }
+
     const previewRequest = buildPreviewRequest(request, url, providerLeaseId, portSegment);
     if (previewRequest instanceof Response) return previewRequest;
 
@@ -356,7 +471,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       sleepAfter: "10m",
       normalizeId: true,
     });
-    return await sandbox.containerFetch(previewRequest, readPort(portSegment)!);
+    return await sandbox.containerFetch(previewRequest, port);
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/probe") {

@@ -76,6 +76,58 @@ ssh -p 2222 guest@<tailscale-name-or-ip>
 
 If you change `SSH_USER` in `.env`, use that username instead.
 
+## Signed Preview Gateway
+
+The classic SSH environment also starts a small signed HTTP preview gateway for
+operator browser checks. Docker Compose publishes it on the same private
+`HOST_BIND_IP` used for SSH:
+
+```text
+http://<tailscale-name-or-ip>:3999/preview/<environmentId>/<port>/<path>?pc_issue=<issue>&pc_run=<run>&pc_exp=<unix>&pc_sig=<sig>
+```
+
+Set these values in `.env`:
+
+```bash
+PAPERCLIP_PREVIEW_GATEWAY_HOST_PORT=3999
+PAPERCLIP_PREVIEW_GATEWAY_ENABLED=1
+PAPERCLIP_PREVIEW_ENVIRONMENT_ID=<stable-environment-id>
+PAPERCLIP_PREVIEW_SIGNING_SECRET=<shared-preview-secret>
+PAPERCLIP_PREVIEW_ALLOWED_PORTS=3000,3001,4000,4200,5000,5173,5174,8000,8080,9000
+```
+
+The gateway verifies `HMAC-SHA256` signatures using the shared
+`paperclip-preview-v1` canonical payload. It derives the target from the URL
+path, requires it to match `PAPERCLIP_PREVIEW_ENVIRONMENT_ID`, rejects expired
+or invalid signatures before proxying, and forwards only HTTP requests to
+`127.0.0.1` on the configured allowed preview ports.
+
+`PAPERCLIP_PREVIEW_SIGNING_SECRET` is required for signed preview links. If it
+is missing, preview requests fail with `preview_signing_unavailable`, but SSH
+and unrelated agent task execution still start normally.
+
+The default allowed preview ports are:
+
+```text
+3000, 3001, 4000, 4200, 5000, 5173, 5174, 8000, 8080, 9000
+```
+
+Do not expose the preview gateway on a public interface. Keep `HOST_BIND_IP`
+set to the machine's Tailscale IP or another private operator-only interface.
+The gateway does not scan ports and does not proxy arbitrary hosts, SSH, Docker,
+database/admin ports, private files, or non-HTTP TCP services.
+
+Manual smoke path:
+
+1. Start an HTTP app inside the SSH environment on an allowed port, for example
+   `5173`.
+2. Generate a signed URL using the shared contract from `RL-1405` with
+   `target=<PAPERCLIP_PREVIEW_ENVIRONMENT_ID>`, the task issue id, run id, port,
+   and expiry.
+3. Open the URL from a browser connected to the same Tailscale network.
+4. Confirm the app opens and that invalid, expired, wrong-target, and disallowed
+   port URLs are rejected.
+
 ## Included CLIs
 
 These are installed globally and available in the shell:

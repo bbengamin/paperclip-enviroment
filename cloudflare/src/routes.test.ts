@@ -36,6 +36,34 @@ function authenticatedRequest(pathname: string, init: RequestInit = {}): Request
   });
 }
 
+function base64Url(input: ArrayBuffer): string {
+  let raw = "";
+  for (const byte of new Uint8Array(input)) raw += String.fromCharCode(byte);
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function signPreview(input: {
+  secret?: string;
+  target?: string;
+  issue?: string;
+  run?: string;
+  port?: number;
+  exp?: string;
+} = {}) {
+  const secret = input.secret ?? "preview-secret";
+  const payload = [
+    "paperclip-preview-v1",
+    `target=${input.target ?? "pc-run-1-abcd1234"}`,
+    `issue=${input.issue ?? "RL-1407"}`,
+    `run=${input.run ?? "run-1"}`,
+    `port=${input.port ?? 27451}`,
+    `exp=${input.exp ?? "4102444800"}`,
+  ].join("\n");
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64Url(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
+}
+
 describe("bridge routes", () => {
   beforeEach(() => {
     vi.mocked(resolveSandbox).mockReset();
@@ -105,6 +133,84 @@ describe("bridge routes", () => {
     expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
     expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Port")).toBe("27451");
     await expect((proxiedRequest as Request).text()).resolves.toBe("hello");
+  });
+
+  it("proxies signed browser preview requests without bridge bearer auth", async () => {
+    const containerFetch = vi.fn().mockResolvedValue(new Response("preview ok", { status: 200 }));
+    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
+    const sig = await signPreview();
+
+    const response = await handleBridgeRequest(
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?tab=home&pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+      ),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        PAPERCLIP_PREVIEW_SIGNING_SECRET: "preview-secret",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(containerFetch).toHaveBeenCalledTimes(1);
+    const [proxiedRequest, port] = containerFetch.mock.calls[0] ?? [];
+    expect(port).toBe(27451);
+    expect((proxiedRequest as Request).url).toBe("https://bridge.example.test/dashboard?tab=home");
+    expect((proxiedRequest as Request).headers.get("Authorization")).toBeNull();
+    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
+  });
+
+  it("rejects signed preview requests with invalid signatures", async () => {
+    const sig = await signPreview({ secret: "wrong-secret" });
+
+    const response = await handleBridgeRequest(
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+      ),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        PAPERCLIP_PREVIEW_SIGNING_SECRET: "preview-secret",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(401);
+    expect(resolveSandbox).not.toHaveBeenCalled();
+  });
+
+  it("rejects expired signed preview requests", async () => {
+    const sig = await signPreview({ exp: "100" });
+
+    const response = await handleBridgeRequest(
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=100&pc_sig=${sig}`,
+      ),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        PAPERCLIP_PREVIEW_SIGNING_SECRET: "preview-secret",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(410);
+    expect(resolveSandbox).not.toHaveBeenCalled();
+  });
+
+  it("rejects signed preview requests when the signing secret is missing", async () => {
+    const sig = await signPreview();
+
+    const response = await handleBridgeRequest(
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+      ),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(503);
+    expect(resolveSandbox).not.toHaveBeenCalled();
   });
 
   it("rejects malformed preview ports before resolving the sandbox", async () => {
