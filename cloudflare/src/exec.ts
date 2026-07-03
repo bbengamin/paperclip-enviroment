@@ -83,13 +83,22 @@ function coerceExecuteResult(result: {
   };
 }
 
+// The cold-start session-watcher race can persist for as long as a rootless
+// docker-in-docker container takes to boot, which routinely exceeds the old
+// ~7s budget (6 attempts × 250ms→2s). Lease acquisition runs its first exec
+// (`tailscale-up`) against a brand-new container, so when that budget is too
+// small the whole lease fails. Retry for ~45s (12 attempts, exponential
+// backoff capped at 5s) to give a cold sandbox time to come up.
+const MAX_TRANSIENT_EXEC_ATTEMPTS = 12;
+const TRANSIENT_EXEC_BACKOFF_CAP_MS = 5_000;
+
 function isTransientSessionWatchError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /ENOENT: no such file or directory, watch '\/tmp\/session-/i.test(message);
 }
 
-function retryDelayMs(attempt: number): number {
-  return Math.min(2_000, 250 * (attempt + 1));
+function transientExecRetryDelayMs(attempt: number): number {
+  return Math.min(TRANSIENT_EXEC_BACKOFF_CAP_MS, 500 * 2 ** attempt);
 }
 
 export async function executeInSandbox(params: BridgeExecuteParams) {
@@ -115,18 +124,28 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
       stdinFile,
     });
     const fullCommand = `sh -lc ${shellQuote(script)}`;
+    // The cold-start session-watcher race is a *pre-attach* failure: it throws
+    // before the command runs, so no output has been produced yet and retrying
+    // is safe. But once a streaming command has forwarded output to the caller,
+    // a retry would re-run the command and duplicate its output and side
+    // effects — so we stop retrying the moment the stream has started.
+    let hasStreamedOutput = false;
+    const forwardOutput = params.onOutput;
     const execOptions = {
       cwd: "/",
       timeout: params.timeoutMs,
-      ...(typeof params.onOutput === "function"
+      ...(typeof forwardOutput === "function"
         ? {
             stream: true,
-            onOutput: params.onOutput,
+            onOutput: async (stream: "stdout" | "stderr", data: string) => {
+              hasStreamedOutput = true;
+              await forwardOutput(stream, data);
+            },
           }
         : {}),
     };
     let lastTransientError: unknown;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_TRANSIENT_EXEC_ATTEMPTS; attempt += 1) {
       const target = await resolveExecutionTarget(params.sandbox, {
         sessionStrategy: params.sessionStrategy,
         sessionId: params.sessionId,
@@ -138,12 +157,12 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
         const result = await target.exec(fullCommand, execOptions);
         return coerceExecuteResult(result);
       } catch (error) {
-        if (!isTransientSessionWatchError(error)) throw error;
+        if (!isTransientSessionWatchError(error) || hasStreamedOutput) throw error;
         lastTransientError = error;
         if (params.sessionStrategy === "named") {
           await params.sandbox.deleteSession(params.sessionId?.trim() || DEFAULT_SESSION_ID).catch(() => undefined);
         }
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt)));
+        await new Promise((resolve) => setTimeout(resolve, transientExecRetryDelayMs(attempt)));
       }
     }
     throw lastTransientError;
