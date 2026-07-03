@@ -23,9 +23,10 @@ RUN chmod 755 /tmp/paperclip-tooling/*.sh \
 ENV NODE_PATH=/usr/local/lib/node_modules
 
 COPY entrypoint.sh /entrypoint.sh
+COPY scripts/preview-gateway.mjs /usr/local/bin/paperclip-preview-gateway.mjs
 
-RUN chmod 755 /entrypoint.sh
+RUN chmod 755 /entrypoint.sh /usr/local/bin/paperclip-preview-gateway.mjs
 
-EXPOSE 22
+EXPOSE 22 3999
 
 ENTRYPOINT ["/entrypoint.sh"]
