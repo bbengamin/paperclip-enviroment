@@ -146,7 +146,7 @@ describe("bridge routes", () => {
       ),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
-        PAPERCLIP_PREVIEW_SIGNING_SECRET: "preview-secret",
+        PREVIEW_SIGNING_SECRET: "preview-secret",
         Sandbox: {} as never,
       },
     );
@@ -169,7 +169,7 @@ describe("bridge routes", () => {
       ),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
-        PAPERCLIP_PREVIEW_SIGNING_SECRET: "preview-secret",
+        PREVIEW_SIGNING_SECRET: "preview-secret",
         Sandbox: {} as never,
       },
     );
@@ -187,7 +187,7 @@ describe("bridge routes", () => {
       ),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
-        PAPERCLIP_PREVIEW_SIGNING_SECRET: "preview-secret",
+        PREVIEW_SIGNING_SECRET: "preview-secret",
         Sandbox: {} as never,
       },
     );

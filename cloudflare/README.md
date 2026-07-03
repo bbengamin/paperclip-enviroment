@@ -117,7 +117,7 @@ https://<bridge-host>/api/paperclip-sandbox/v1/preview/<providerLeaseId>/<port>/
 
 Signed preview URLs use `HMAC-SHA256` with the `paperclip-preview-v1` canonical
 payload from `RL-1405`. The Worker verifies signatures with the
-`PAPERCLIP_PREVIEW_SIGNING_SECRET` secret, derives the target from
+`PREVIEW_SIGNING_SECRET` secret, derives the target from
 `providerLeaseId`, rejects expired or invalid links before resolving the
 sandbox, and strips signing query parameters plus bridge auth headers before
 forwarding to the sandboxed app.
