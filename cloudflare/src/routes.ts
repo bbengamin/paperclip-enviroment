@@ -287,7 +287,7 @@ async function execLeaseUtility(
     args,
     cwd,
     timeoutMs: options.timeoutMs,
-    sessionStrategy: options.sessionStrategy,
+    sessionStrategy: "default",
     sessionId: options.sessionId,
   });
 }
@@ -320,7 +320,7 @@ async function ensureTailscale(
     command: "tailscale-up",
     cwd: "/",
     timeoutMs: input.timeoutMs,
-    sessionStrategy: input.sessionStrategy,
+    sessionStrategy: "default",
     sessionId: input.sessionId,
     env: {
       TAILSCALE_AUTHKEY: tailscaleAuthKey,

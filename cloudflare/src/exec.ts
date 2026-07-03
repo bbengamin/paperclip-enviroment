@@ -1,6 +1,6 @@
 import type { Sandbox as CloudflareSandbox } from "@cloudflare/sandbox";
 import { shellQuote } from "./helpers.js";
-import { isTimeoutError } from "./sandboxes.js";
+import { DEFAULT_SESSION_ID, isTimeoutError } from "./sandboxes.js";
 import { cleanupTimedOutExecution, resolveExecutionTarget, type SessionStrategy } from "./sessions.js";
 
 export interface BridgeExecuteParams {
@@ -140,6 +140,9 @@ export async function executeInSandbox(params: BridgeExecuteParams) {
       } catch (error) {
         if (!isTransientSessionWatchError(error)) throw error;
         lastTransientError = error;
+        if (params.sessionStrategy === "named") {
+          await params.sandbox.deleteSession(params.sessionId?.trim() || DEFAULT_SESSION_ID).catch(() => undefined);
+        }
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs(attempt)));
       }
     }
