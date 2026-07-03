@@ -135,6 +135,73 @@ describe("bridge exec", () => {
     expect(sandbox.deleteSession).not.toHaveBeenCalled();
   });
 
+  it("keeps retrying the cold-start session-watcher race past the legacy 6-attempt budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const watchError = new Error(
+        "ENOENT: no such file or directory, watch '/tmp/session-sandbox-pc-probe-1-123'",
+      );
+      const exec = vi.fn();
+      for (let i = 0; i < 7; i += 1) exec.mockRejectedValueOnce(watchError);
+      exec.mockResolvedValueOnce({ exitCode: 0, stdout: "ok\n", stderr: "" });
+      const sandbox = {
+        exec,
+        getSession: vi.fn(),
+        writeFile: vi.fn(),
+        deleteFile: vi.fn(),
+        deleteSession: vi.fn(),
+      } as const;
+
+      const promise = executeInSandbox({
+        sandbox: sandbox as never,
+        command: "tailscale-up",
+        sessionStrategy: "default",
+        timeoutMs: 5_000,
+      });
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result).toMatchObject({ exitCode: 0, stdout: "ok\n" });
+      // 7 transient failures + 1 success would have exhausted the old 6-attempt
+      // budget; the enlarged budget lets a slow cold boot succeed.
+      expect(exec).toHaveBeenCalledTimes(8);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a streaming command once output has been forwarded", async () => {
+    const watchError = new Error(
+      "ENOENT: no such file or directory, watch '/tmp/session-sandbox-pc-probe-1-123'",
+    );
+    const exec = vi.fn().mockImplementation(async (_command, options) => {
+      await options?.onOutput?.("stdout", "partial\n");
+      throw watchError;
+    });
+    const sandbox = {
+      exec,
+      getSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      deleteSession: vi.fn(),
+    } as const;
+    const onOutput = vi.fn();
+
+    await expect(
+      executeInSandbox({
+        sandbox: sandbox as never,
+        command: "codex",
+        sessionStrategy: "default",
+        timeoutMs: 5_000,
+        onOutput,
+      }),
+    ).rejects.toThrow(/watch '\/tmp\/session-/);
+
+    // Retrying after output already streamed would duplicate the run.
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(onOutput).toHaveBeenCalledWith("stdout", "partial\n");
+  });
+
   it("stages stdin through a sandbox temp file and redirects from it", async () => {
     const exec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const writeFile = vi.fn().mockResolvedValue(undefined);
