@@ -90,7 +90,7 @@ export function verifyPreviewRequest(url, options) {
       ok: false,
       status: 503,
       error: "preview_signing_unavailable",
-      message: "PAPERCLIP_PREVIEW_SIGNING_SECRET is required for signed preview links.",
+      message: "PREVIEW_SIGNING_SECRET is required for signed preview links.",
     };
   }
 
@@ -142,7 +142,7 @@ function sanitizedHeaders(headers) {
 export function createPreviewGateway(options = {}) {
   const environmentId = options.environmentId ?? getEnvironmentId();
   const allowedPorts = options.allowedPorts ?? parseAllowedPorts(process.env.PAPERCLIP_PREVIEW_ALLOWED_PORTS);
-  const secret = options.secret ?? process.env.PAPERCLIP_PREVIEW_SIGNING_SECRET;
+  const secret = options.secret ?? process.env.PREVIEW_SIGNING_SECRET;
 
   return http.createServer((req, res) => {
     const requestUrl = new URL(req.url ?? "/", "http://preview-gateway.local");

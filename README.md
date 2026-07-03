@@ -92,7 +92,7 @@ Set these values in `.env`:
 PAPERCLIP_PREVIEW_GATEWAY_HOST_PORT=3999
 PAPERCLIP_PREVIEW_GATEWAY_ENABLED=1
 PAPERCLIP_PREVIEW_ENVIRONMENT_ID=<stable-environment-id>
-PAPERCLIP_PREVIEW_SIGNING_SECRET=<shared-preview-secret>
+PREVIEW_SIGNING_SECRET=<shared-preview-secret>
 PAPERCLIP_PREVIEW_ALLOWED_PORTS=3000,3001,4000,4200,5000,5173,5174,8000,8080,9000
 ```
 
@@ -102,7 +102,7 @@ path, requires it to match `PAPERCLIP_PREVIEW_ENVIRONMENT_ID`, rejects expired
 or invalid signatures before proxying, and forwards only HTTP requests to
 `127.0.0.1` on the configured allowed preview ports.
 
-`PAPERCLIP_PREVIEW_SIGNING_SECRET` is required for signed preview links. If it
+`PREVIEW_SIGNING_SECRET` is required for signed preview links. If it
 is missing, preview requests fail with `preview_signing_unavailable`, but SSH
 and unrelated agent task execution still start normally.
 
