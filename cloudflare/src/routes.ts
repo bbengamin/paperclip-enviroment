@@ -466,6 +466,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         dockerInDocker: true,
         dockerHostNetworkSmoke: true,
         previewUrls: true,
+        previewSigningConfigured: Boolean(env.PREVIEW_SIGNING_SECRET?.trim()),
         acquireColdStartRetry: true,
       },
     });

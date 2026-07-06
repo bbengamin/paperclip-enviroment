@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+set -eu
+
+secret_file="${PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE:-/run/paperclip-preview/signing-secret}"
+gateway_port="${PAPERCLIP_PREVIEW_GATEWAY_PORT:-3999}"
+health_url="http://127.0.0.1:${gateway_port}/.well-known/paperclip-preview"
+
+if [ "${PREVIEW_SIGNING_SECRET:-}" != "" ]; then
+  parent_dir="$(dirname "$secret_file")"
+  mkdir -p "$parent_dir"
+  umask 077
+  printf '%s' "$PREVIEW_SIGNING_SECRET" > "$secret_file"
+  chmod 600 "$secret_file" 2>/dev/null || true
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  curl -fsS "$health_url"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO- "$health_url"
+else
+  node -e '
+const http = require("http");
+const url = process.argv[1];
+http.get(url, (res) => {
+  let body = "";
+  res.on("data", (chunk) => { body += chunk; });
+  res.on("end", () => {
+    process.stdout.write(body);
+    process.exit(res.statusCode >= 200 && res.statusCode < 300 ? 0 : 1);
+  });
+}).on("error", (error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+' "$health_url"
+fi
+

@@ -2,10 +2,13 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 
 export const DEFAULT_ALLOWED_PORTS = Object.freeze([3000, 3001, 4000, 4200, 5000, 5173, 5174, 8000, 8080, 9000]);
 export const DEFAULT_LISTEN_HOST = "0.0.0.0";
 export const DEFAULT_LISTEN_PORT = 3999;
+export const DEFAULT_SIGNING_SECRET_FILE = "/run/paperclip-preview/signing-secret";
 
 function base64Url(input) {
   return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
@@ -42,6 +45,31 @@ export function signPreviewPayload(secret, payload) {
 
 export function getEnvironmentId(env = process.env) {
   return env.PAPERCLIP_PREVIEW_ENVIRONMENT_ID || env.PAPERCLIP_ENVIRONMENT_ID || env.PAPERCLIP_RUNTIME_ENVIRONMENT_ID || os.hostname();
+}
+
+export function getSigningSecretFile(env = process.env) {
+  return env.PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE || DEFAULT_SIGNING_SECRET_FILE;
+}
+
+export function readSigningSecret(options = {}) {
+  if (typeof options.secret === "string") {
+    const secret = options.secret.trim();
+    return { secret, source: secret ? "option" : null };
+  }
+
+  const secretFile = options.secretFile ?? getSigningSecretFile();
+  try {
+    if (secretFile && fs.existsSync(secretFile)) {
+      const secret = fs.readFileSync(secretFile, "utf8").trim();
+      if (secret) return { secret, source: "file" };
+    }
+  } catch {
+    // Fall through to the environment. Verification will fail closed if no
+    // usable secret is available.
+  }
+
+  const envSecret = process.env.PREVIEW_SIGNING_SECRET?.trim() ?? "";
+  return { secret: envSecret, source: envSecret ? "env" : null };
 }
 
 export function parsePreviewPath(pathname) {
@@ -142,16 +170,21 @@ function sanitizedHeaders(headers) {
 export function createPreviewGateway(options = {}) {
   const environmentId = options.environmentId ?? getEnvironmentId();
   const allowedPorts = options.allowedPorts ?? parseAllowedPorts(process.env.PAPERCLIP_PREVIEW_ALLOWED_PORTS);
-  const secret = options.secret ?? process.env.PREVIEW_SIGNING_SECRET;
+  const secretFile = options.secretFile ?? getSigningSecretFile();
 
   return http.createServer((req, res) => {
     const requestUrl = new URL(req.url ?? "/", "http://preview-gateway.local");
-    if (requestUrl.pathname === "/health") {
+    if (requestUrl.pathname === "/health" || requestUrl.pathname === "/.well-known/paperclip-preview") {
+      const { secret, source } = readSigningSecret({ secret: options.secret, secretFile });
       const body = JSON.stringify({
         ok: true,
         provider: "ssh",
         environmentId,
+        target: environmentId,
+        routePrefix: `/preview/${encodeURIComponent(environmentId)}`,
         signingConfigured: Boolean(secret),
+        signingSecretSource: source,
+        runtimeSigningSecretFile: secretFile,
         allowedPorts,
       });
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
@@ -159,6 +192,7 @@ export function createPreviewGateway(options = {}) {
       return;
     }
 
+    const { secret } = readSigningSecret({ secret: options.secret, secretFile });
     const verification = verifyPreviewRequest(requestUrl, {
       environmentId,
       allowedPorts,
@@ -195,6 +229,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.PAPERCLIP_PREVIEW_GATEWAY_PORT || DEFAULT_LISTEN_PORT);
   const server = createPreviewGateway();
   server.listen(port, host, () => {
-    console.error(`paperclip preview gateway listening on ${host}:${port} for environment ${getEnvironmentId()}`);
+    console.error(`paperclip preview gateway listening on ${host}:${port} for environment ${getEnvironmentId()} with runtime secret file ${path.resolve(getSigningSecretFile())}`);
   });
 }

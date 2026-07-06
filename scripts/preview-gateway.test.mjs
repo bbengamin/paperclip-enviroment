@@ -2,6 +2,9 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   DEFAULT_ALLOWED_PORTS,
   canonicalPreviewPayload,
@@ -49,14 +52,15 @@ const upstream = http.createServer((req, res) => {
   assert.equal(req.url, "/app?tab=home", "gateway must remove signing query parameters");
   res.end("preview ok");
 });
-upstream.listen(3000, "127.0.0.1");
+upstream.listen(0, "127.0.0.1");
 await once(upstream, "listening");
+const upstreamPort = upstream.address().port;
 
-const gateway = createPreviewGateway({ environmentId, allowedPorts: DEFAULT_ALLOWED_PORTS, secret });
+const gateway = createPreviewGateway({ environmentId, allowedPorts: [upstreamPort], secret });
 gateway.listen(0, "127.0.0.1");
 await once(gateway, "listening");
 const gatewayPort = gateway.address().port;
-const url = signedUrl();
+const url = signedUrl({ port: upstreamPort });
 url.host = `127.0.0.1:${gatewayPort}`;
 
 const body = await new Promise((resolve, reject) => {
@@ -76,5 +80,59 @@ const body = await new Promise((resolve, reject) => {
 assert.equal(body, "preview ok", "gateway should proxy valid signed HTTP previews");
 await new Promise((resolve) => gateway.close(resolve));
 await new Promise((resolve) => upstream.close(resolve));
+
+const dynamicUpstream = http.createServer((_req, res) => {
+  res.end("dynamic preview ok");
+});
+dynamicUpstream.listen(0, "127.0.0.1");
+await once(dynamicUpstream, "listening");
+const dynamicUpstreamPort = dynamicUpstream.address().port;
+
+const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-preview-gateway-"));
+const secretFile = path.join(tmpDir, "signing-secret");
+const dynamicGateway = createPreviewGateway({ environmentId, allowedPorts: [dynamicUpstreamPort], secretFile });
+dynamicGateway.listen(0, "127.0.0.1");
+await once(dynamicGateway, "listening");
+const dynamicGatewayPort = dynamicGateway.address().port;
+const dynamicUrl = signedUrl({ port: dynamicUpstreamPort });
+dynamicUrl.host = `127.0.0.1:${dynamicGatewayPort}`;
+
+const unavailable = await new Promise((resolve, reject) => {
+  const req = http.get(dynamicUrl, (res) => {
+    let data = "";
+    res.on("data", (chunk) => { data += chunk; });
+    res.on("end", () => resolve({ status: res.statusCode, data }));
+  });
+  req.on("error", reject);
+});
+assert.equal(unavailable.status, 503, "gateway without boot-time or file secret should reject signed previews");
+assert.match(unavailable.data, /preview_signing_unavailable/);
+
+await fs.writeFile(secretFile, secret, { mode: 0o600 });
+const metadata = await new Promise((resolve, reject) => {
+  const req = http.get(`http://127.0.0.1:${dynamicGatewayPort}/.well-known/paperclip-preview`, (res) => {
+    let data = "";
+    res.on("data", (chunk) => { data += chunk; });
+    res.on("end", () => resolve(JSON.parse(data)));
+  });
+  req.on("error", reject);
+});
+assert.equal(metadata.target, environmentId, "metadata endpoint should expose the gateway signing target");
+assert.equal(metadata.signingConfigured, true, "metadata endpoint should reflect runtime-file secret availability");
+assert.equal(metadata.signingSecretSource, "file", "metadata endpoint should report runtime file secret source");
+
+const dynamicBody = await new Promise((resolve, reject) => {
+  const req = http.get(dynamicUrl, (res) => {
+    let data = "";
+    res.on("data", (chunk) => { data += chunk; });
+    res.on("end", () => resolve(data));
+  });
+  req.on("error", reject);
+});
+assert.equal(dynamicBody, "dynamic preview ok", "gateway should accept signed previews after runtime secret file appears");
+
+await new Promise((resolve) => dynamicGateway.close(resolve));
+await new Promise((resolve) => dynamicUpstream.close(resolve));
+await fs.rm(tmpDir, { recursive: true, force: true });
 
 console.log("preview-gateway tests passed");

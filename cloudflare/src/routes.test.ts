@@ -79,6 +79,7 @@ describe("bridge routes", () => {
       }),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
+        PREVIEW_SIGNING_SECRET: "preview-secret",
         TAILSCALE_AUTHKEY: "tskey-test",
         Sandbox: {} as never,
       },
@@ -92,6 +93,7 @@ describe("bridge routes", () => {
         dockerInDocker: true,
         namedSessions: true,
         previewUrls: true,
+        previewSigningConfigured: true,
         reuseLease: true,
       },
     });
