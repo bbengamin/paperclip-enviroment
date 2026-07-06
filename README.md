@@ -91,20 +91,42 @@ Set these values in `.env`:
 ```bash
 PAPERCLIP_PREVIEW_GATEWAY_HOST_PORT=3999
 PAPERCLIP_PREVIEW_GATEWAY_ENABLED=1
-PAPERCLIP_PREVIEW_ENVIRONMENT_ID=<stable-environment-id>
-PREVIEW_SIGNING_SECRET=<shared-preview-secret>
+PAPERCLIP_PREVIEW_ENVIRONMENT_ID=<optional-stable-environment-id>
+PREVIEW_SIGNING_SECRET=<optional-boot-time-shared-preview-secret>
+PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE=/run/paperclip-preview/signing-secret
 PAPERCLIP_PREVIEW_ALLOWED_PORTS=3000,3001,4000,4200,5000,5173,5174,8000,8080,9000
 ```
 
 The gateway verifies `HMAC-SHA256` signatures using the shared
 `paperclip-preview-v1` canonical payload. It derives the target from the URL
-path, requires it to match `PAPERCLIP_PREVIEW_ENVIRONMENT_ID`, rejects expired
-or invalid signatures before proxying, and forwards only HTTP requests to
-`127.0.0.1` on the configured allowed preview ports.
+path, requires it to match the gateway's canonical target, rejects expired or
+invalid signatures before proxying, and forwards only HTTP requests to
+`127.0.0.1` on the configured allowed preview ports. The canonical target is
+published by:
+
+```text
+http://127.0.0.1:3999/.well-known/paperclip-preview
+```
+
+Use the response `target` value when signing links instead of guessing an
+environment id.
 
 `PREVIEW_SIGNING_SECRET` is required for signed preview links. If it
 is missing, preview requests fail with `preview_signing_unavailable`, but SSH
-and unrelated agent task execution still start normally.
+and unrelated agent task execution still start normally. Because Paperclip run
+secrets can arrive after the container and gateway process have already started,
+the gateway also reads the secret from
+`PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE` on every request. Agents can publish
+their run-time secret to that file and read gateway metadata with:
+
+```bash
+paperclip-preview-configure
+```
+
+This command uses the agent's `PREVIEW_SIGNING_SECRET`, writes it to the
+runtime secret file, and prints the `.well-known/paperclip-preview` metadata.
+It keeps the operator contract to one manually configured secret:
+`PREVIEW_SIGNING_SECRET`.
 
 The default allowed preview ports are:
 
@@ -122,8 +144,8 @@ Manual smoke path:
 1. Start an HTTP app inside the SSH environment on an allowed port, for example
    `5173`.
 2. Generate a signed URL using the shared contract from `RL-1405` with
-   `target=<PAPERCLIP_PREVIEW_ENVIRONMENT_ID>`, the task issue id, run id, port,
-   and expiry.
+   `target=<target from /.well-known/paperclip-preview>`, the task issue id,
+   run id, port, and expiry.
 3. Open the URL from a browser connected to the same Tailscale network.
 4. Confirm the app opens and that invalid, expired, wrong-target, and disallowed
    port URLs are rejected.

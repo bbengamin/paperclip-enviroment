@@ -54,6 +54,13 @@ chmod 600 "$SSH_HOME/.ssh/authorized_keys"
 # workspaces. Keep it user-owned and independent from the environment repo.
 install -d -m 775 -o "$SSH_UID" -g "$SSH_GID" "$WORKSPACE_DIR"
 
+# The preview gateway starts with the container, but Paperclip run secrets can
+# arrive later in the agent shell. Let the SSH user publish the run-time signing
+# secret to a narrow file that the root-owned gateway can read per request.
+PREVIEW_SECRET_FILE="${PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE:-/run/paperclip-preview/signing-secret}"
+PREVIEW_SECRET_DIR="$(dirname "$PREVIEW_SECRET_FILE")"
+install -d -m 700 -o "$SSH_UID" -g "$SSH_GID" "$PREVIEW_SECRET_DIR"
+
 # --- Docker-in-Docker (rootless) -------------------------------------------
 # Give the SSH user an isolated, self-owned Docker daemon instead of sharing
 # the host socket. Each environment runs its own rootless dockerd, so workers
