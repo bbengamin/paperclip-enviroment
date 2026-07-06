@@ -746,6 +746,23 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
             sessionStrategy,
             sessionId,
           };
+          // Stream-delivery observability (visible via `wrangler tail` / Workers
+          // Logs): a live incident showed Codex output arriving as one ~187KB
+          // chunk ~5 minutes after exec start, i.e. buffered upstream of this
+          // Worker (container control plane / SDK), while every hop we own
+          // forwards immediately. These logs prove per-run where the first
+          // output actually surfaced in the Worker.
+          const execStartedAt = Date.now();
+          let firstOutputLogged = false;
+          let outputEvents = 0;
+          let outputBytes = 0;
+          console.log(JSON.stringify({
+            event: "bridge.exec.start",
+            providerLeaseId: body.providerLeaseId,
+            command: body.command,
+            sessionStrategy,
+            sessionId,
+          }));
           const sendEvent = (type: string, payload: unknown): boolean => {
             try {
               controller.enqueue(encoder.encode(encodeSseEvent(type, payload)));
@@ -782,13 +799,41 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
               sessionStrategy,
               sessionId,
               onOutput: async (streamName, data) => {
+                outputEvents += 1;
+                outputBytes += data.length;
+                if (!firstOutputLogged) {
+                  firstOutputLogged = true;
+                  console.log(JSON.stringify({
+                    event: "bridge.exec.first_output",
+                    providerLeaseId: body.providerLeaseId,
+                    stream: streamName,
+                    bytes: data.length,
+                    msSinceExecStart: Date.now() - execStartedAt,
+                  }));
+                }
                 if (!sendEvent(streamName, { data })) {
                   throw new Error("Cloudflare sandbox bridge SSE stream closed while forwarding output.");
                 }
               },
             });
+            console.log(JSON.stringify({
+              event: "bridge.exec.complete",
+              providerLeaseId: body.providerLeaseId,
+              exitCode: result.exitCode,
+              outputEvents,
+              outputBytes,
+              durationMs: Date.now() - execStartedAt,
+            }));
             sendTerminal("complete", { ...result, metadata: streamMetadata });
           } catch (error) {
+            console.log(JSON.stringify({
+              event: "bridge.exec.error",
+              providerLeaseId: body.providerLeaseId,
+              error: error instanceof Error ? error.message : String(error),
+              outputEvents,
+              outputBytes,
+              durationMs: Date.now() - execStartedAt,
+            }));
             sendTerminal("error", {
               error: error instanceof Error ? error.message : String(error),
               metadata: streamMetadata,
