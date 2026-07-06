@@ -58,6 +58,34 @@ interface ExecuteRequestBody {
 
 const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
 
+// Bumped manually on behavior changes so the /health route can prove which
+// build is actually deployed (deploy drift has burned us before).
+const BRIDGE_VERSION = "0.2.0";
+
+// A brand-new sandbox container can come up wedged (rootless DIND boot crash,
+// tailscaled never ready). In that state every exec fails no matter how long
+// exec.ts re-polls the session watcher — the only recovery is a *fresh*
+// container. Under non-reuse the sandbox id carries a random suffix, so each
+// attempt below provisions a genuinely new container; under reuse the id is
+// deterministic and the retry just re-runs setup against the same sandbox.
+const ACQUIRE_SETUP_MAX_ATTEMPTS = 3;
+const ACQUIRE_SETUP_RETRY_DELAY_MS = 1_000;
+
+// Cold-start setup failures worth a fresh-sandbox retry: the SDK's
+// session-watcher ENOENT (surfaces after exec.ts's own retry budget is
+// exhausted), a setup utility exiting non-zero (daemon not up yet), or a
+// setup timeout. Deterministic configuration errors (missing Worker secret)
+// must fail immediately instead of burning retries.
+function isColdStartSetupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/TAILSCALE_AUTHKEY/.test(message)) return false;
+  return (
+    /ENOENT: no such file or directory, watch '\/tmp\/session-/i.test(message) ||
+    /failed with exit code/i.test(message) ||
+    /timed out/i.test(message)
+  );
+}
+
 const TAILSCALE_PROXY_ENV = {
   ALL_PROXY: "socks5://127.0.0.1:1055",
   all_proxy: "socks5://127.0.0.1:1055",
@@ -429,7 +457,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     return toJsonResponse({
       ok: true,
       provider: "cloudflare",
-      bridgeVersion: "0.1.0",
+      bridgeVersion: BRIDGE_VERSION,
       tailscaleRequired: true,
       tailscaleConfigured: Boolean(env.TAILSCALE_AUTHKEY?.trim()),
       capabilities: {
@@ -438,6 +466,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         dockerInDocker: true,
         dockerHostNetworkSmoke: true,
         previewUrls: true,
+        acquireColdStartRetry: true,
       },
     });
   }
@@ -533,56 +562,72 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     const sessionStrategy = readSessionStrategy(body.sessionStrategy);
     const sessionId = readString(body.sessionId, DEFAULT_SESSION_ID);
     const timeoutMs = readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS);
-    const providerLeaseId = buildLeaseSandboxId({
-      environmentId: body.environmentId,
-      runId: body.runId,
-      reuseLease,
-      normalizeId,
-      issueId: body.issueId ?? null,
-    });
-    const sandbox = await resolveSandbox(env, providerLeaseId, { keepAlive, sleepAfter, normalizeId });
-    // Guard against orphaning a keepAlive sandbox if workspace setup throws
-    // after creation: Paperclip never sees the lease ID in that case, so it
-    // can't clean up. Destroy here unless this is a reuseLease handshake
-    // (where the sandbox may have been created by a prior acquire and we
-    // shouldn't destroy it on a transient setup failure during reattachment).
-    try {
-      await applySandboxKeepAlive(sandbox, keepAlive);
-      await ensureTailscale(sandbox, env, { providerLeaseId, timeoutMs, sessionStrategy, sessionId });
-      await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
-      await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
-      await writeSentinel(sandbox, {
-        providerLeaseId,
-        remoteCwd,
-        sessionStrategy,
-        sessionId,
-        keepAlive,
-        sleepAfter,
-        normalizeId,
-        resumedLease: false,
-        timeoutMs,
-      });
-    } catch (err) {
-      if (!reuseLease) {
-        await sandbox.destroy().catch(() => undefined);
-      }
-      throw err;
-    }
 
-    return toJsonResponse({
-      providerLeaseId,
-      metadata: {
-        provider: "cloudflare",
-        remoteCwd,
-        sandboxId: providerLeaseId,
-        sessionStrategy,
-        sessionId,
-        keepAlive,
-        sleepAfter,
+    for (let attempt = 1; ; attempt += 1) {
+      // Non-reuse ids carry a fresh random suffix per attempt, so a retry
+      // provisions a genuinely new container instead of re-polling a wedged
+      // one. Reuse ids are deterministic — same sandbox every attempt.
+      const providerLeaseId = buildLeaseSandboxId({
+        environmentId: body.environmentId,
+        runId: body.runId,
+        reuseLease,
         normalizeId,
-        resumedLease: false,
-      },
-    });
+        issueId: body.issueId ?? null,
+      });
+      const sandbox = await resolveSandbox(env, providerLeaseId, { keepAlive, sleepAfter, normalizeId });
+      // Guard against orphaning a keepAlive sandbox if workspace setup throws
+      // after creation: Paperclip never sees the lease ID in that case, so it
+      // can't clean up. Destroy here unless this is a reuseLease handshake
+      // (where the sandbox may have been created by a prior acquire and we
+      // shouldn't destroy it on a transient setup failure during reattachment).
+      try {
+        await applySandboxKeepAlive(sandbox, keepAlive);
+        await ensureTailscale(sandbox, env, { providerLeaseId, timeoutMs, sessionStrategy, sessionId });
+        await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
+        await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
+        await writeSentinel(sandbox, {
+          providerLeaseId,
+          remoteCwd,
+          sessionStrategy,
+          sessionId,
+          keepAlive,
+          sleepAfter,
+          normalizeId,
+          resumedLease: false,
+          timeoutMs,
+        });
+      } catch (err) {
+        if (!reuseLease) {
+          await sandbox.destroy().catch(() => undefined);
+        }
+        if (!isColdStartSetupError(err)) throw err;
+        if (attempt >= ACQUIRE_SETUP_MAX_ATTEMPTS) {
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `Cloudflare sandbox lease setup failed after ${attempt} cold-start attempts: ${message}`,
+            { cause: err },
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, ACQUIRE_SETUP_RETRY_DELAY_MS));
+        continue;
+      }
+
+      return toJsonResponse({
+        providerLeaseId,
+        metadata: {
+          provider: "cloudflare",
+          remoteCwd,
+          sandboxId: providerLeaseId,
+          sessionStrategy,
+          sessionId,
+          keepAlive,
+          sleepAfter,
+          normalizeId,
+          resumedLease: false,
+          setupAttempts: attempt,
+        },
+      });
+    }
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/leases/resume") {

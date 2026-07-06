@@ -434,6 +434,150 @@ describe("bridge routes", () => {
     expect(commandArg).toContain("localhost");
   });
 
+  it("retries lease setup on a fresh sandbox when the container cold-boot wedges", async () => {
+    // First sandbox: tailscale-up exits non-zero (daemon never came up).
+    const wedgedExec = vi.fn().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "tailscaled not running" });
+    const wedgedSandbox = {
+      exec: wedgedExec,
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    // Second sandbox: healthy.
+    const healthyExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    const healthySandbox = {
+      exec: healthyExec,
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox)
+      .mockResolvedValueOnce(wedgedSandbox as never)
+      .mockResolvedValueOnce(healthySandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/acquire", {
+        environmentId: "env-1",
+        runId: "run-1",
+        requestedCwd: "/workspace/paperclip",
+      }),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        TAILSCALE_AUTHKEY: "tskey-test",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { providerLeaseId: string; metadata: { setupAttempts: number } };
+    expect(payload.metadata.setupAttempts).toBe(2);
+
+    // The wedged sandbox must be destroyed, and the retry must target a
+    // different sandbox id (fresh random suffix under non-reuse).
+    expect(wedgedSandbox.destroy).toHaveBeenCalledTimes(1);
+    expect(healthySandbox.destroy).not.toHaveBeenCalled();
+    const [, firstId] = vi.mocked(resolveSandbox).mock.calls[0] ?? [];
+    const [, secondId] = vi.mocked(resolveSandbox).mock.calls[1] ?? [];
+    expect(firstId).not.toBe(secondId);
+    expect(payload.providerLeaseId).toBe(secondId);
+    // Healthy sandbox ran the full setup sequence.
+    expect(healthyExec.mock.calls[0]?.[0]).toContain("tailscale-up");
+    expect(healthyExec.mock.calls[3]?.[0]).toContain(".paperclip-lease.json");
+  });
+
+  it("gives up after the cold-start retry budget and reports the attempt count", async () => {
+    const wedgedExec = vi.fn().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "tailscaled not running" });
+    const makeWedgedSandbox = () => ({
+      exec: wedgedExec,
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    });
+    const sandboxes = [makeWedgedSandbox(), makeWedgedSandbox(), makeWedgedSandbox()];
+    for (const sandbox of sandboxes) {
+      vi.mocked(resolveSandbox).mockResolvedValueOnce(sandbox as never);
+    }
+
+    await expect(handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/acquire", {
+        environmentId: "env-1",
+        runId: "run-1",
+        requestedCwd: "/workspace/paperclip",
+      }),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        TAILSCALE_AUTHKEY: "tskey-test",
+        Sandbox: {} as never,
+      },
+    )).rejects.toThrow(/after 3 cold-start attempts.*tailscale up failed/s);
+
+    expect(resolveSandbox).toHaveBeenCalledTimes(3);
+    for (const sandbox of sandboxes) {
+      expect(sandbox.destroy).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("retries lease setup when the SDK session-watcher race escapes the exec retry budget", async () => {
+    const watchError = new Error(
+      "Failed to execute command 'sh -lc ...' in session 'sandbox-pc-x': ENOENT: no such file or directory, watch '/tmp/session-sandbox-pc-x-123'",
+    );
+    const wedgedSandbox = {
+      exec: vi.fn().mockRejectedValue(watchError),
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    const healthySandbox = {
+      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }),
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox)
+      .mockResolvedValueOnce(wedgedSandbox as never)
+      .mockResolvedValueOnce(healthySandbox as never);
+
+    // The watch error first burns exec.ts's own ~45s in-place retry budget
+    // before surfacing to the acquire loop — fast-forward through it.
+    vi.useFakeTimers();
+    try {
+      const responsePromise = handleBridgeRequest(
+        bridgeRequest("/api/paperclip-sandbox/v1/leases/acquire", {
+          environmentId: "env-1",
+          runId: "run-1",
+          requestedCwd: "/workspace/paperclip",
+        }),
+        {
+          BRIDGE_AUTH_TOKEN: "secret-token",
+          TAILSCALE_AUTHKEY: "tskey-test",
+          Sandbox: {} as never,
+        },
+      );
+      await vi.runAllTimersAsync();
+      const response = await responsePromise;
+
+      expect(response.status).toBe(200);
+      expect(wedgedSandbox.destroy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects lease setup when the required Tailscale secret is missing", async () => {
     const sandbox = {
       getSession: vi.fn().mockResolvedValue({ exec: vi.fn() }),
