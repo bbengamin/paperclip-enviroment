@@ -1,4 +1,4 @@
-FROM docker.io/cloudflare/sandbox:0.12.1-musl AS cloudflare-sandbox
+FROM docker.io/cloudflare/sandbox:0.12.3-musl AS cloudflare-sandbox
 
 FROM docker:dind-rootless
 
