@@ -19,6 +19,12 @@ services:
       PAPERCLIP_PREVIEW_GATEWAY_ENABLED: ${PAPERCLIP_PREVIEW_GATEWAY_ENABLED:-1}
       PAPERCLIP_PREVIEW_GATEWAY_PORT: 3999
       PAPERCLIP_PREVIEW_ENVIRONMENT_ID: ${PAPERCLIP_PREVIEW_ENVIRONMENT_ID:-}
+      PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE: ${PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE:-ssh}
+      # Operator-facing origin the preview gateway is reachable at. The gateway
+      # inside the container cannot see the host's Tailscale interface, so we
+      # derive it from the already-configured private bind IP + published port.
+      # Override in .env if the gateway sits behind a different host/name.
+      PAPERCLIP_PREVIEW_BASE_URL: ${PAPERCLIP_PREVIEW_BASE_URL:-http://${HOST_BIND_IP}:${PAPERCLIP_PREVIEW_GATEWAY_HOST_PORT:-3999}}
       PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE: ${PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE:-/run/paperclip-preview/signing-secret}
       PREVIEW_SIGNING_SECRET: ${PREVIEW_SIGNING_SECRET:-}
       PAPERCLIP_PREVIEW_ALLOWED_PORTS: ${PAPERCLIP_PREVIEW_ALLOWED_PORTS:-3000,3001,4000,4200,5000,5173,5174,8000,8080,9000}

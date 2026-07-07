@@ -105,6 +105,7 @@ describe("bridge routes", () => {
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
         PREVIEW_SIGNING_SECRET: "preview-secret",
+        PAPERCLIP_PREVIEW_BASE_URL: "https://bridge.example.workers.dev",
         TAILSCALE_AUTHKEY: "tskey-test",
         Sandbox: {} as never,
       },
@@ -119,6 +120,7 @@ describe("bridge routes", () => {
         namedSessions: true,
         previewUrls: true,
         previewSigningConfigured: true,
+        previewBaseUrlConfigured: true,
         reuseLease: true,
       },
     });
@@ -463,6 +465,53 @@ describe("bridge routes", () => {
     expect(commandArg).toContain("metadata.google.internal");
     expect(commandArg).toContain("127.0.0.1");
     expect(commandArg).toContain("localhost");
+  });
+
+  it("injects authoritative preview signing env into sandbox exec commands", async () => {
+    const sessionExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    const sandbox = {
+      getSession: vi.fn().mockResolvedValue({ exec: sessionExec }),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox).mockResolvedValue(sandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/exec", {
+        providerLeaseId: "pc-run-1-abcd1234",
+        command: "codex",
+        args: ["exec", "-"],
+        // A caller-supplied signing secret must be overridden by the Worker's
+        // own secret so the signer always matches this Worker's verifier.
+        env: { PREVIEW_SIGNING_SECRET: "stale-caller-secret" },
+        sessionStrategy: "named",
+        sessionId: "paperclip",
+      }),
+      {
+        BRIDGE_AUTH_TOKEN: "secret-token",
+        PREVIEW_SIGNING_SECRET: "worker-preview-secret",
+        PAPERCLIP_PREVIEW_BASE_URL: "https://bridge.example.workers.dev",
+        TAILSCALE_AUTHKEY: "tskey-test",
+        Sandbox: {} as never,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const commandArg = sessionExec.mock.calls[0]?.[0] as string;
+    expect(commandArg).toContain("PAPERCLIP_PREVIEW_BASE_URL=");
+    expect(commandArg).toContain("https://bridge.example.workers.dev");
+    expect(commandArg).toContain("PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE=");
+    expect(commandArg).toContain("cloudflare");
+    // The canonical signing target and lease id are the providerLeaseId.
+    expect(commandArg).toContain("PAPERCLIP_PREVIEW_TARGET_ID=");
+    expect(commandArg).toContain("PAPERCLIP_PROVIDER_LEASE_ID=");
+    expect(commandArg).toContain("pc-run-1-abcd1234");
+    // Worker secret wins over the caller-supplied value.
+    expect(commandArg).toContain("PREVIEW_SIGNING_SECRET=");
+    expect(commandArg).toContain("worker-preview-secret");
+    expect(commandArg).not.toContain("stale-caller-secret");
   });
 
   it("retries lease setup on a fresh sandbox when the container cold-boot wedges", async () => {

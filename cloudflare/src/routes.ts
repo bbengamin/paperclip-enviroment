@@ -60,7 +60,7 @@ const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
 
 // Bumped manually on behavior changes so the /health route can prove which
 // build is actually deployed (deploy drift has burned us before).
-const BRIDGE_VERSION = "0.3.0";
+const BRIDGE_VERSION = "0.3.1";
 
 // A brand-new sandbox container can come up wedged (rootless DIND boot crash,
 // tailscaled never ready). In that state every exec fails no matter how long
@@ -121,6 +121,33 @@ function withTailscaleProxyEnv(env: BridgeEnv, commandEnv?: Record<string, strin
   next.NO_PROXY = mergeNoProxy(commandEnv?.NO_PROXY ?? commandEnv?.no_proxy);
   next.no_proxy = next.NO_PROXY;
   return next;
+}
+
+// Forward the authoritative preview signing inputs into the in-sandbox command
+// environment. The in-sandbox agent (via the `preview-handoff` skill) needs the
+// bridge's public origin, the canonical signing target, and the signing secret
+// to build a browser-clickable signed preview URL — but Worker vars/secrets do
+// not automatically appear inside the container, so the bridge must inject them
+// at exec time. These values are authoritative and override any same-named keys
+// the caller passed, which guarantees the signer secret always matches the
+// secret this same Worker verifies with (no two-copies drift).
+function withPreviewEnv(
+  env: BridgeEnv,
+  providerLeaseId: string,
+  commandEnv?: Record<string, string>,
+): Record<string, string> | undefined {
+  const injected: Record<string, string> = {
+    // For Cloudflare the canonical `target=` line is the providerLeaseId, which
+    // is also the value the agent must place in the preview URL path.
+    PAPERCLIP_PREVIEW_TARGET_ID: providerLeaseId,
+    PAPERCLIP_PROVIDER_LEASE_ID: providerLeaseId,
+    PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE: "cloudflare",
+  };
+  const baseUrl = env.PAPERCLIP_PREVIEW_BASE_URL?.trim();
+  if (baseUrl) injected.PAPERCLIP_PREVIEW_BASE_URL = baseUrl;
+  const secret = env.PREVIEW_SIGNING_SECRET?.trim();
+  if (secret) injected.PREVIEW_SIGNING_SECRET = secret;
+  return { ...(commandEnv ?? {}), ...injected };
 }
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
@@ -497,6 +524,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         dockerHostNetworkSmoke: true,
         previewUrls: true,
         previewSigningConfigured: Boolean(env.PREVIEW_SIGNING_SECRET?.trim()),
+        previewBaseUrlConfigured: Boolean(env.PAPERCLIP_PREVIEW_BASE_URL?.trim()),
         acquireColdStartRetry: true,
         acquireReadinessGate: true,
       },
@@ -828,7 +856,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
               command: body.command!,
               args: Array.isArray(body.args) ? body.args.filter((value): value is string => typeof value === "string") : [],
               cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-              env: withTailscaleProxyEnv(env, body.env),
+              env: withPreviewEnv(env, body.providerLeaseId!, withTailscaleProxyEnv(env, body.env)),
               stdin: body.stdin ?? null,
               timeoutMs: readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS),
               sessionStrategy,
@@ -896,7 +924,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       command: body.command,
       args: Array.isArray(body.args) ? body.args.filter((value): value is string => typeof value === "string") : [],
       cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-      env: withTailscaleProxyEnv(env, body.env),
+      env: withPreviewEnv(env, body.providerLeaseId, withTailscaleProxyEnv(env, body.env)),
       stdin: body.stdin ?? null,
       timeoutMs: readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS),
       sessionStrategy,
