@@ -95,6 +95,9 @@ PAPERCLIP_PREVIEW_ENVIRONMENT_ID=<optional-stable-environment-id>
 PREVIEW_SIGNING_SECRET=<optional-boot-time-shared-preview-secret>
 PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE=/run/paperclip-preview/signing-secret
 PAPERCLIP_PREVIEW_ALLOWED_PORTS=3000,3001,4000,4200,5000,5173,5174,8000,8080,9000
+# Optional. Left unset, docker-compose derives it from HOST_BIND_IP + the
+# published gateway port.
+PAPERCLIP_PREVIEW_BASE_URL=<optional-public-origin-e.g-http://100.x.y.z:3999>
 ```
 
 The gateway verifies `HMAC-SHA256` signatures using the shared
@@ -108,8 +111,9 @@ published by:
 http://127.0.0.1:3999/.well-known/paperclip-preview
 ```
 
-Use the response `target` value when signing links instead of guessing an
-environment id.
+The metadata response includes `target`, `routePrefix`, and `baseUrl` (the
+operator-facing origin). Sign links against `baseUrl` + `routePrefix` and use
+the `target` value instead of guessing an environment id or a host.
 
 `PREVIEW_SIGNING_SECRET` is required for signed preview links. If it
 is missing, preview requests fail with `preview_signing_unavailable`, but SSH

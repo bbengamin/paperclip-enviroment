@@ -51,6 +51,28 @@ export function getSigningSecretFile(env = process.env) {
   return env.PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE || DEFAULT_SIGNING_SECRET_FILE;
 }
 
+// The operator-facing origin the gateway is reachable at (normally
+// http://<tailscale-ip-or-name>:<host-port>). The gateway itself listens on
+// 0.0.0.0 inside the container and cannot observe the host's Tailscale
+// interface, so this is provided by the environment (docker-compose derives it
+// from HOST_BIND_IP + the published gateway port). Publishing it in the
+// discovery metadata lets the in-sandbox agent build a signed preview URL
+// against the real host instead of guessing (which previously produced links
+// pointed at the Paperclip app domain).
+export function normalizePreviewBaseUrl(value) {
+  const trimmed = (value || "").trim();
+  return trimmed ? trimmed.replace(/\/+$/, "") : null;
+}
+
+export function getPreviewBaseUrl(env = process.env) {
+  return normalizePreviewBaseUrl(env.PAPERCLIP_PREVIEW_BASE_URL);
+}
+
+export function getEnvironmentType(env = process.env) {
+  const value = (env.PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE || "").trim();
+  return value || "ssh";
+}
+
 export function readSigningSecret(options = {}) {
   if (typeof options.secret === "string") {
     const secret = options.secret.trim();
@@ -171,17 +193,22 @@ export function createPreviewGateway(options = {}) {
   const environmentId = options.environmentId ?? getEnvironmentId();
   const allowedPorts = options.allowedPorts ?? parseAllowedPorts(process.env.PAPERCLIP_PREVIEW_ALLOWED_PORTS);
   const secretFile = options.secretFile ?? getSigningSecretFile();
+  const baseUrl = options.baseUrl === undefined ? getPreviewBaseUrl() : normalizePreviewBaseUrl(options.baseUrl);
+  const environmentType = options.environmentType ?? getEnvironmentType();
 
   return http.createServer((req, res) => {
     const requestUrl = new URL(req.url ?? "/", "http://preview-gateway.local");
     if (requestUrl.pathname === "/health" || requestUrl.pathname === "/.well-known/paperclip-preview") {
       const { secret, source } = readSigningSecret({ secret: options.secret, secretFile });
+      const routePrefix = `/preview/${encodeURIComponent(environmentId)}`;
       const body = JSON.stringify({
         ok: true,
         provider: "ssh",
+        environmentType,
         environmentId,
         target: environmentId,
-        routePrefix: `/preview/${encodeURIComponent(environmentId)}`,
+        routePrefix,
+        baseUrl,
         signingConfigured: Boolean(secret),
         signingSecretSource: source,
         runtimeSigningSecretFile: secretFile,

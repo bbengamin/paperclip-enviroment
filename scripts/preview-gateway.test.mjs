@@ -120,6 +120,39 @@ const metadata = await new Promise((resolve, reject) => {
 assert.equal(metadata.target, environmentId, "metadata endpoint should expose the gateway signing target");
 assert.equal(metadata.signingConfigured, true, "metadata endpoint should reflect runtime-file secret availability");
 assert.equal(metadata.signingSecretSource, "file", "metadata endpoint should report runtime file secret source");
+assert.equal(metadata.environmentType, "ssh", "metadata endpoint should default the environment type to ssh");
+assert.ok(Object.prototype.hasOwnProperty.call(metadata, "baseUrl"), "metadata endpoint should always include a baseUrl field");
+
+// A gateway told its public origin must advertise it so the in-sandbox agent
+// can sign a link against the real host instead of guessing a base URL.
+const baseUrlGateway = createPreviewGateway({
+  environmentId,
+  allowedPorts: [dynamicUpstreamPort],
+  secretFile,
+  baseUrl: "http://100.100.100.100:3999/",
+});
+baseUrlGateway.listen(0, "127.0.0.1");
+await once(baseUrlGateway, "listening");
+const baseUrlGatewayPort = baseUrlGateway.address().port;
+const baseUrlMetadata = await new Promise((resolve, reject) => {
+  const req = http.get(`http://127.0.0.1:${baseUrlGatewayPort}/.well-known/paperclip-preview`, (res) => {
+    let data = "";
+    res.on("data", (chunk) => { data += chunk; });
+    res.on("end", () => resolve(JSON.parse(data)));
+  });
+  req.on("error", reject);
+});
+assert.equal(
+  baseUrlMetadata.baseUrl,
+  "http://100.100.100.100:3999",
+  "metadata endpoint should expose the configured public base URL without a trailing slash",
+);
+assert.equal(
+  baseUrlMetadata.routePrefix,
+  `/preview/${encodeURIComponent(environmentId)}`,
+  "metadata endpoint should expose the signing route prefix",
+);
+await new Promise((resolve) => baseUrlGateway.close(resolve));
 
 const dynamicBody = await new Promise((resolve, reject) => {
   const req = http.get(dynamicUrl, (res) => {

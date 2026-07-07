@@ -24,6 +24,27 @@ npx wrangler secret put TAILSCALE_HOSTNAME
 npx wrangler secret put TAILSCALE_EXTRA_ARGS
 ```
 
+For browser-clickable signed preview links, also set:
+
+```bash
+# HMAC secret the Worker verifies signed preview URLs with. Missing => the
+# preview route answers 503 preview_signing_unavailable.
+npx wrangler secret put PREVIEW_SIGNING_SECRET
+# Public origin of this bridge, e.g.
+# https://paperclip-cloudflare-sandbox-bridge.<account>.workers.dev
+# Can be a var or secret; the bridge reads it from the Worker env.
+npx wrangler secret put PAPERCLIP_PREVIEW_BASE_URL
+```
+
+The bridge forwards `PAPERCLIP_PREVIEW_BASE_URL`, the `providerLeaseId` (as the
+signing target), the `cloudflare` environment type, and `PREVIEW_SIGNING_SECRET`
+into every `/exec` sandbox environment. Worker vars/secrets do not otherwise
+cross into the container, so this injection is what lets the in-sandbox agent
+build a signed preview URL against the real bridge host. Because the same Worker
+secret is used to both sign (injected) and verify, the two copies cannot drift.
+Confirm the deploy exposes `bridgeVersion` >= `0.3.1` with
+`previewSigningConfigured` and `previewBaseUrlConfigured` via `GET /health`.
+
 ## Deploy
 
 ```bash

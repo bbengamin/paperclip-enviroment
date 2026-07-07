@@ -6,6 +6,13 @@ export interface BridgeEnv {
   Sandbox: DurableObjectNamespace<CloudflareSandbox>;
   BRIDGE_AUTH_TOKEN?: string;
   PREVIEW_SIGNING_SECRET?: string;
+  // Operator-configured public origin of this bridge (e.g.
+  // "https://paperclip-cloudflare-sandbox-bridge.<acct>.workers.dev"). Set as a
+  // Worker var/secret. The bridge forwards it into every /exec sandbox env so
+  // the in-sandbox agent can build a signed preview URL against the real bridge
+  // host instead of guessing (Worker vars do not cross into the container by
+  // themselves).
+  PAPERCLIP_PREVIEW_BASE_URL?: string;
   TAILSCALE_AUTHKEY?: string;
   TAILSCALE_HOSTNAME?: string;
   TAILSCALE_EXTRA_ARGS?: string;
