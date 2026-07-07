@@ -4,8 +4,33 @@ vi.mock("@cloudflare/sandbox", () => ({
   getSandbox: vi.fn(),
 }));
 
-import { handleBridgeRequest } from "./routes.js";
+import { handleBridgeRequest, isColdStartSetupError } from "./routes.js";
 import { resolveSandbox } from "./sandboxes.js";
+
+describe("isColdStartSetupError", () => {
+  it("treats a tailscale-up cold-start ENOENT as retryable even though the message echoes TAILSCALE_AUTHKEY", () => {
+    // The exact live failure: the SDK error echoes the whole command, which
+    // carries `TAILSCALE_AUTHKEY='tskey-…'`, on a /tmp/session- watch ENOENT.
+    const msg =
+      "Failed to execute command 'sh -lc '…exec env TAILSCALE_AUTHKEY='tskey-abc' TAILSCALE_HOSTNAME='pc-x' 'tailscale-up''' " +
+      "in session 'sandbox-pc-x': ENOENT: no such file or directory, watch '/tmp/session-sandbox-pc-x-123'";
+    expect(isColdStartSetupError(new Error(msg))).toBe(true);
+  });
+
+  it("does not retry the deterministic missing-secret config error", () => {
+    expect(
+      isColdStartSetupError(
+        new Error("TAILSCALE_AUTHKEY Worker secret is required for Cloudflare sandbox leases and exec requests."),
+      ),
+    ).toBe(false);
+  });
+
+  it("retries generic cold-start signatures and skips unrelated errors", () => {
+    expect(isColdStartSetupError(new Error("readiness probe failed with exit code 1"))).toBe(true);
+    expect(isColdStartSetupError(new Error("tailscale up timed out"))).toBe(true);
+    expect(isColdStartSetupError(new Error("some unrelated bridge error"))).toBe(false);
+  });
+});
 
 vi.mock("./sandboxes.js", async () => {
   const actual = await vi.importActual<typeof import("./sandboxes.js")>("./sandboxes.js");
@@ -264,7 +289,9 @@ describe("bridge routes", () => {
     // Both calls use a single command string — the SDK's exec API ignores
     // any `args` or `stdin` option, so the bridge folds them into the
     // command line itself.
-    expect(sandboxExec).toHaveBeenCalledTimes(4);
+    // A readiness probe (`true`) runs first to absorb the cold-start race, then
+    // tailscale-up, docker smoke, workspace mkdir, and the sentinel write.
+    expect(sandboxExec).toHaveBeenCalledTimes(5);
     for (const call of sandboxExec.mock.calls) {
       const [commandArg, optionsArg] = call;
       expect(typeof commandArg).toBe("string");
@@ -273,11 +300,12 @@ describe("bridge routes", () => {
       expect(optionsArg).not.toHaveProperty("args");
       expect(optionsArg).not.toHaveProperty("stdin");
     }
-    expect(sandboxExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    expect(sandboxExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
-    expect(sandboxExec.mock.calls[2]?.[0]).toContain("mkdir");
-    expect(sandboxExec.mock.calls[2]?.[0]).toContain("/workspace/paperclip");
-    expect(sandboxExec.mock.calls[3]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
+    expect(sandboxExec.mock.calls[0]?.[0]).toContain("true");
+    expect(sandboxExec.mock.calls[1]?.[0]).toContain("tailscale-up");
+    expect(sandboxExec.mock.calls[2]?.[0]).toContain("docker-runtime-smoke");
+    expect(sandboxExec.mock.calls[3]?.[0]).toContain("mkdir");
+    expect(sandboxExec.mock.calls[3]?.[0]).toContain("/workspace/paperclip");
+    expect(sandboxExec.mock.calls[4]?.[0]).toContain("/workspace/paperclip/.paperclip-lease.json");
   });
 
   it("checks lease sentinels through direct sandbox exec on resume", async () => {
@@ -310,9 +338,10 @@ describe("bridge routes", () => {
     expect(response.status).toBe(200);
     expect(sandbox.readFile).not.toHaveBeenCalled();
     expect(sandbox.getSession).not.toHaveBeenCalled();
-    expect(sandboxExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    expect(sandboxExec.mock.calls[1]?.[0]).toContain("docker-runtime-smoke");
-    const [commandArg, optionsArg] = sandboxExec.mock.calls[2] ?? [];
+    expect(sandboxExec.mock.calls[0]?.[0]).toContain("true");
+    expect(sandboxExec.mock.calls[1]?.[0]).toContain("tailscale-up");
+    expect(sandboxExec.mock.calls[2]?.[0]).toContain("docker-runtime-smoke");
+    const [commandArg, optionsArg] = sandboxExec.mock.calls[3] ?? [];
     expect(typeof commandArg).toBe("string");
     expect(commandArg).toMatch(/^sh -lc /);
     expect(commandArg).toContain("test -s");
@@ -488,9 +517,10 @@ describe("bridge routes", () => {
     const [, secondId] = vi.mocked(resolveSandbox).mock.calls[1] ?? [];
     expect(firstId).not.toBe(secondId);
     expect(payload.providerLeaseId).toBe(secondId);
-    // Healthy sandbox ran the full setup sequence.
-    expect(healthyExec.mock.calls[0]?.[0]).toContain("tailscale-up");
-    expect(healthyExec.mock.calls[3]?.[0]).toContain(".paperclip-lease.json");
+    // Healthy sandbox ran the full setup sequence (readiness probe first).
+    expect(healthyExec.mock.calls[0]?.[0]).toContain("true");
+    expect(healthyExec.mock.calls[1]?.[0]).toContain("tailscale-up");
+    expect(healthyExec.mock.calls[4]?.[0]).toContain(".paperclip-lease.json");
   });
 
   it("gives up after the cold-start retry budget and reports the attempt count", async () => {
@@ -520,7 +550,7 @@ describe("bridge routes", () => {
         TAILSCALE_AUTHKEY: "tskey-test",
         Sandbox: {} as never,
       },
-    )).rejects.toThrow(/after 3 cold-start attempts.*tailscale up failed/s);
+    )).rejects.toThrow(/after 3 cold-start attempts.*readiness probe failed/s);
 
     expect(resolveSandbox).toHaveBeenCalledTimes(3);
     for (const sandbox of sandboxes) {
@@ -582,6 +612,9 @@ describe("bridge routes", () => {
 
   it("rejects lease setup when the required Tailscale secret is missing", async () => {
     const sandbox = {
+      // Readiness probe (`true`) runs before ensureTailscale and must succeed so
+      // the flow reaches the missing-secret check.
+      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }),
       getSession: vi.fn().mockResolvedValue({ exec: vi.fn() }),
       createSession: vi.fn(),
       writeFile: vi.fn(),

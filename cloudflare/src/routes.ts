@@ -60,7 +60,7 @@ const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
 
 // Bumped manually on behavior changes so the /health route can prove which
 // build is actually deployed (deploy drift has burned us before).
-const BRIDGE_VERSION = "0.2.0";
+const BRIDGE_VERSION = "0.3.0";
 
 // A brand-new sandbox container can come up wedged (rootless DIND boot crash,
 // tailscaled never ready). In that state every exec fails no matter how long
@@ -76,9 +76,14 @@ const ACQUIRE_SETUP_RETRY_DELAY_MS = 1_000;
 // exhausted), a setup utility exiting non-zero (daemon not up yet), or a
 // setup timeout. Deterministic configuration errors (missing Worker secret)
 // must fail immediately instead of burning retries.
-function isColdStartSetupError(error: unknown): boolean {
+export function isColdStartSetupError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  if (/TAILSCALE_AUTHKEY/.test(message)) return false;
+  // Deterministic config error (Worker secret missing) — never retry. Match the
+  // SPECIFIC message, not the bare word: a cold-start ENOENT during `tailscale-up`
+  // echoes the whole command, which contains `TAILSCALE_AUTHKEY=…`, so a bare
+  // /TAILSCALE_AUTHKEY/ guard mis-classified the retryable boot race as config
+  // and skipped the recreate loop (the raw-ENOENT bug).
+  if (/TAILSCALE_AUTHKEY Worker secret is required/i.test(message)) return false;
   return (
     /ENOENT: no such file or directory, watch '\/tmp\/session-/i.test(message) ||
     /failed with exit code/i.test(message) ||
@@ -331,6 +336,31 @@ function requireZeroExit(action: string, result: { exitCode: number | null; time
   }
 }
 
+// Warm the container's exec/session infra with a cheap idempotent no-op before
+// running real setup. `executeInSandbox` retries the cold-start session-watcher
+// race internally, so this absorbs the boot race here — on a command that
+// carries no secrets and is safe to re-run — instead of letting `tailscale-up`
+// (the old first command) take the brunt of it. Benefits: (1) the recreate loop
+// classifies a wedged boot correctly (the probe's error can't echo
+// TAILSCALE_AUTHKEY), and (2) a later `tailscale-up` failure is a *real*
+// tailscale failure, not a mis-attributed boot race.
+const READINESS_PROBE_TIMEOUT_MS = 60_000;
+
+async function ensureSandboxReady(
+  sandbox: CloudflareSandbox,
+  options: { sessionId: string; timeoutMs: number },
+) {
+  const result = await executeInSandbox({
+    sandbox,
+    command: "true",
+    cwd: "/",
+    timeoutMs: Math.min(options.timeoutMs, READINESS_PROBE_TIMEOUT_MS),
+    sessionStrategy: "default",
+    sessionId: options.sessionId,
+  });
+  requireZeroExit("sandbox readiness probe", result);
+}
+
 async function ensureTailscale(
   sandbox: CloudflareSandbox,
   env: BridgeEnv,
@@ -468,6 +498,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         previewUrls: true,
         previewSigningConfigured: Boolean(env.PREVIEW_SIGNING_SECRET?.trim()),
         acquireColdStartRetry: true,
+        acquireReadinessGate: true,
       },
     });
   }
@@ -523,6 +554,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     const sandbox = await resolveSandbox(env, sandboxId, { keepAlive, sleepAfter, normalizeId });
     await applySandboxKeepAlive(sandbox, keepAlive);
     try {
+      await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
       await ensureTailscale(sandbox, env, { providerLeaseId: sandboxId, timeoutMs, sessionStrategy, sessionId });
       await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
       await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
@@ -583,6 +615,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       // shouldn't destroy it on a transient setup failure during reattachment).
       try {
         await applySandboxKeepAlive(sandbox, keepAlive);
+        await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
         await ensureTailscale(sandbox, env, { providerLeaseId, timeoutMs, sessionStrategy, sessionId });
         await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
         await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
@@ -650,6 +683,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     // `getSandbox` is idempotent on the Sandbox SDK side (no new sandbox is
     // created), so a failed resume doesn't leak a *new* sandbox.
     await applySandboxKeepAlive(sandbox, keepAlive);
+    await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
     await ensureTailscale(sandbox, env, {
       providerLeaseId: body.providerLeaseId,
       timeoutMs,
