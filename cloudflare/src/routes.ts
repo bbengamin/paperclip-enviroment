@@ -10,6 +10,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   resolveSandbox,
   applySandboxKeepAlive,
+  applySandboxPreviewHold,
   toErrorResponse,
   toJsonResponse,
   type BridgeEnv,
@@ -60,7 +61,27 @@ const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
 
 // Bumped manually on behavior changes so the /health route can prove which
 // build is actually deployed (deploy drift has burned us before).
-const BRIDGE_VERSION = "0.3.1";
+const BRIDGE_VERSION = "0.3.2";
+
+// Preview hold: how long a retained (reuse) sandbox stays before it is allowed
+// to sleep after a run completes. Armed as the sandbox `sleepAfter` on release.
+const DEFAULT_PREVIEW_HOLD_SECONDS = 3600;
+const MIN_PREVIEW_HOLD_SECONDS = 60;
+
+function resolvePreviewHoldSeconds(env: BridgeEnv): number {
+  const raw = env.PREVIEW_HOLD_SECONDS?.trim();
+  if (!raw) return DEFAULT_PREVIEW_HOLD_SECONDS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PREVIEW_HOLD_SECONDS;
+  return Math.max(MIN_PREVIEW_HOLD_SECONDS, Math.trunc(parsed));
+}
+
+// The SDK's sleepAfter accepts duration strings; the codebase uses minute/hour
+// units ("10m", "1h"). Express the hold in whole minutes (>=1) so we only rely
+// on the "m" unit that is already exercised elsewhere.
+function previewHoldSleepAfter(seconds: number): string {
+  return `${Math.max(1, Math.round(seconds / 60))}m`;
+}
 
 // A brand-new sandbox container can come up wedged (rootless DIND boot crash,
 // tailscaled never ready). In that state every exec fails no matter how long
@@ -525,6 +546,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         previewUrls: true,
         previewSigningConfigured: Boolean(env.PREVIEW_SIGNING_SECRET?.trim()),
         previewBaseUrlConfigured: Boolean(env.PAPERCLIP_PREVIEW_BASE_URL?.trim()),
+        previewHoldSeconds: resolvePreviewHoldSeconds(env),
         acquireColdStartRetry: true,
         acquireReadinessGate: true,
       },
@@ -759,6 +781,23 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       return toJsonResponse({ ok: true });
     }
     if (readBoolean(body.reuseLease, false)) {
+      // Reuse: keep the sandbox (the operator wants to review the PR / preview),
+      // but arm the preview hold so it sleeps after the idle window instead of
+      // living forever under keepAlive. Sleeping scales it to zero (disk wiped,
+      // instance slot + billing freed); a later run on the same task renews
+      // activity and resets the timer. Best-effort: a failure here must not fail
+      // the release.
+      const holdSleepAfter = previewHoldSleepAfter(resolvePreviewHoldSeconds(env));
+      try {
+        const sandbox = await resolveSandbox(env, body.providerLeaseId, {
+          keepAlive: false,
+          sleepAfter: holdSleepAfter,
+          normalizeId: true,
+        });
+        await applySandboxPreviewHold(sandbox, holdSleepAfter);
+      } catch {
+        // Sandbox still exists; it may just live longer than the hold window.
+      }
       return toJsonResponse({ ok: true });
     }
     const sandbox = await resolveSandbox(env, body.providerLeaseId, {
