@@ -58,10 +58,14 @@ interface ExecuteRequestBody {
 }
 
 const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
+// The bridge's own reserved namespace (health, leases, exec, preview). Requests
+// outside it are candidate app asset paths for a cookie-pinned preview session.
+const BRIDGE_API_PREFIX = "/api/paperclip-sandbox/";
+const PREVIEW_COOKIE_NAME = "pc_preview";
 
 // Bumped manually on behavior changes so the /health route can prove which
 // build is actually deployed (deploy drift has burned us before).
-const BRIDGE_VERSION = "0.3.3";
+const BRIDGE_VERSION = "0.3.4";
 
 // Preview hold: how long a retained (reuse) sandbox stays before it is allowed
 // to sleep after a run completes. Armed as the sandbox `sleepAfter` on release.
@@ -325,6 +329,114 @@ function buildPreviewRequest(request: Request, url: URL, providerLeaseId: string
   } as RequestInit & { duplex: "half" });
 }
 
+// --- Cookie-pinned preview session -----------------------------------------
+// A browser loading a preview page fetches its CSS/JS/images at absolute
+// origin-root paths (e.g. `/logo.webp`, `/_nuxt/entry.js`) that carry neither
+// the preview route prefix nor the pc_* signature, so they 401. On a valid
+// signed top-level request we set a signed cookie pinning the browser to
+// {lease, port}; subsequent non-API requests carrying it are proxied to that
+// sandbox using their full path. This is framework-agnostic (works for any app
+// that serves root-absolute assets).
+
+function canonicalPreviewCookiePayload(input: { lease: string; port: number; exp: string }): string {
+  return [
+    "paperclip-preview-cookie-v1",
+    `lease=${input.lease}`,
+    `port=${input.port}`,
+    `exp=${input.exp}`,
+  ].join("\n");
+}
+
+async function buildPreviewCookieValue(
+  env: BridgeEnv,
+  lease: string,
+  port: number,
+  exp: string,
+): Promise<string | null> {
+  const secret = env.PREVIEW_SIGNING_SECRET?.trim();
+  if (!secret) return null;
+  const sig = await hmacSha256Base64Url(secret, canonicalPreviewCookiePayload({ lease, port, exp }));
+  return `${encodeURIComponent(lease)}.${port}.${exp}.${sig}`;
+}
+
+function readCookieValue(request: Request, name: string): string | null {
+  const header = request.headers.get("Cookie");
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
+async function readPinnedPreview(
+  env: BridgeEnv,
+  request: Request,
+): Promise<{ lease: string; port: number } | null> {
+  const secret = env.PREVIEW_SIGNING_SECRET?.trim();
+  if (!secret) return null;
+  const raw = readCookieValue(request, PREVIEW_COOKIE_NAME);
+  if (!raw) return null;
+  const parts = raw.split(".");
+  if (parts.length !== 4) return null;
+  const [encLease, portStr, exp, sig] = parts as [string, string, string, string];
+  const lease = decodeURIComponent(encLease);
+  const port = readPort(portStr);
+  if (!lease || port === null || !/^\d+$/.test(exp)) return null;
+  if (Number(exp) <= Math.floor(Date.now() / 1000)) return null;
+  const expected = await hmacSha256Base64Url(secret, canonicalPreviewCookiePayload({ lease, port, exp }));
+  if (!timingSafeStringEqual(expected, sig)) return null;
+  return { lease, port };
+}
+
+// Drop only our own cookie before forwarding, so the app still sees its own
+// cookies (sessions) but never our pinning token.
+function stripPinningCookie(headers: Headers): void {
+  const cookie = headers.get("Cookie");
+  if (!cookie) return;
+  const kept = cookie
+    .split(";")
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0 && !c.startsWith(`${PREVIEW_COOKIE_NAME}=`));
+  if (kept.length > 0) headers.set("Cookie", kept.join("; "));
+  else headers.delete("Cookie");
+}
+
+function buildPinnedPreviewRequest(request: Request, url: URL, lease: string, port: number): Request {
+  // Asset paths are already container-root paths; forward the full path as-is.
+  const upstreamUrl = new URL(url.toString());
+  stripPreviewQueryParams(upstreamUrl);
+  const headers = new Headers(request.headers);
+  headers.delete("Authorization");
+  headers.delete("X-Paperclip-Environment-Id");
+  headers.delete("X-Paperclip-Issue-Id");
+  stripPinningCookie(headers);
+  headers.set("X-Paperclip-Preview-Lease-Id", lease);
+  headers.set("X-Paperclip-Preview-Port", String(port));
+  return new Request(upstreamUrl.toString(), {
+    method: request.method,
+    headers,
+    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+    redirect: "manual",
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+}
+
+function withPreviewCookie(response: Response, cookieValue: string, exp: string): Response {
+  const maxAge = Math.max(0, Number(exp) - Math.floor(Date.now() / 1000));
+  const headers = new Headers(response.headers);
+  headers.append(
+    "Set-Cookie",
+    `${PREVIEW_COOKIE_NAME}=${cookieValue}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=None`,
+  );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function requireTailscaleAuthKey(env: BridgeEnv): string {
   const tailscaleAuthKey = env.TAILSCALE_AUTHKEY?.trim();
   if (!tailscaleAuthKey) {
@@ -527,6 +639,25 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
   const pathname = url.pathname.replace(/\/+$/, "");
 
   const isAuthorized = await isAuthorizedRequest(request, env.BRIDGE_AUTH_TOKEN);
+
+  // Cookie-pinned preview session: a browser's sub-resource requests (CSS/JS/
+  // images) arrive at absolute origin-root paths outside the bridge API
+  // namespace. If such a request carries a valid preview cookie, proxy it to the
+  // pinned sandbox+port so full pages render. Bridge API routes are excluded and
+  // still require the bearer token.
+  if (!isAuthorized && !pathname.startsWith(BRIDGE_API_PREFIX)) {
+    const pinned = await readPinnedPreview(env, request);
+    if (pinned) {
+      const pinnedRequest = buildPinnedPreviewRequest(request, url, pinned.lease, pinned.port);
+      const sandbox = await resolveSandbox(env, pinned.lease, {
+        keepAlive: false,
+        sleepAfter: "10m",
+        normalizeId: true,
+      });
+      return await sandbox.containerFetch(pinnedRequest, pinned.port);
+    }
+  }
+
   if (!isAuthorized && !pathname.startsWith(PREVIEW_ROUTE_PREFIX)) {
     return toErrorResponse(401, "unauthorized", "Missing or invalid bridge bearer token.");
   }
@@ -550,6 +681,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         acquireColdStartRetry: true,
         acquireReadinessGate: true,
         acquireReuseColdStartRecreate: true,
+        previewCookieSession: true,
       },
     });
   }
@@ -567,12 +699,14 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       return toErrorResponse(400, "invalid_request", "Preview port must be an integer from 1 to 65535.");
     }
 
+    let signedExp: string | null = null;
     if (!isAuthorized) {
       if (!hasSignedPreviewParams(url)) {
         return toErrorResponse(401, "unauthorized", "Missing bridge bearer token or signed preview query parameters.");
       }
       const rejected = await verifySignedPreviewUrl(env, url, providerLeaseId, port);
       if (rejected) return rejected;
+      signedExp = url.searchParams.get("pc_exp");
     }
 
     const previewRequest = buildPreviewRequest(request, url, providerLeaseId, portSegment);
@@ -583,7 +717,15 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       sleepAfter: "10m",
       normalizeId: true,
     });
-    return await sandbox.containerFetch(previewRequest, port);
+    const response = await sandbox.containerFetch(previewRequest, port);
+
+    // Pin the browser to this sandbox+port so its root-absolute asset requests
+    // (which lose both the route prefix and the signature) still reach the app.
+    if (signedExp) {
+      const cookieValue = await buildPreviewCookieValue(env, providerLeaseId, port, signedExp);
+      if (cookieValue) return withPreviewCookie(response, cookieValue, signedExp);
+    }
+    return response;
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/probe") {
