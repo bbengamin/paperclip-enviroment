@@ -157,11 +157,12 @@ Manual smoke path:
 ### Preview app supervisor (`paperclip-preview`)
 
 Both images install `paperclip-preview`, a small idempotent supervisor for the
-preview app process. It exists because on a reused/held sandbox an agent often
-re-enters a warm environment where a preview server it started earlier is still
-running; without a record, agents waste steps rediscovering ports and killing
-stale listeners. It records the running app in a manifest
-(`/tmp/paperclip-preview.json`) so re-entry is a status check, not a hunt:
+preview app process. It exists because agents often re-enter a warm environment
+— a persistent SSH container, or a reused/held Cloudflare sandbox — where a
+preview server they started earlier is still running; without a record, they
+waste steps rediscovering ports and killing stale listeners. It records the
+running app in a manifest (`/tmp/paperclip-preview.json`) so re-entry is a status
+check, not a hunt:
 
 ```bash
 paperclip-preview status                 # is a preview already serving?
@@ -171,8 +172,9 @@ paperclip-preview stop
 
 `start` adopts the port if it already serves HTTP; otherwise it launches the
 command detached (`setsid`/`nohup`) so it survives the run session, then waits
-for the port. The manifest lives on ephemeral disk, so it is naturally cleared
-when the sandbox sleeps.
+for the port. On the persistent SSH environment the manifest persists with the
+container; on Cloudflare it lives on ephemeral disk and clears when the sandbox
+sleeps (which is fine — after sleep there is no app to reconcile).
 
 ## Included CLIs
 
