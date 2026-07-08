@@ -15,6 +15,7 @@ for (const source of [
   "scripts/install-common-tools.sh",
   "scripts/install-docker-tools.sh",
   "scripts/install-tailscale.sh",
+  "scripts/paperclip-preview",
 ]) {
   copyFileSync(join(repoRoot, source), join(outDir, source.split("/").at(-1)));
 }

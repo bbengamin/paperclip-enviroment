@@ -27,6 +27,11 @@ COPY tailscale-up.sh /usr/local/bin/tailscale-up
 COPY boot-docker-for-dind.sh /home/rootless/boot-docker-for-dind.sh
 COPY docker-host-network-wrapper.sh /usr/local/bin/docker-host-network-wrapper
 COPY docker-runtime-smoke.sh /usr/local/bin/docker-runtime-smoke
+# Preview app supervisor (repo-root script, synced into the build context by
+# scripts/sync-tooling.mjs). Lets an agent idempotently start/adopt/stop the
+# preview server on a reused sandbox instead of hunting stale listeners.
+COPY .docker-tooling/paperclip-preview /usr/local/bin/paperclip-preview
+RUN sed -i 's/\r$//' /usr/local/bin/paperclip-preview && chmod +x /usr/local/bin/paperclip-preview
 RUN sed -i 's/\r$//' /usr/local/bin/tailscale-up /home/rootless/boot-docker-for-dind.sh /usr/local/bin/docker-runtime-smoke \
   && if [ ! -e /usr/local/bin/docker-real ]; then mv /usr/local/bin/docker /usr/local/bin/docker-real; fi \
   && mv /usr/local/bin/docker-host-network-wrapper /usr/local/bin/docker \
