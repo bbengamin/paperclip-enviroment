@@ -11,6 +11,10 @@ ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PAPERCLIP_CLOUDFLARE_DOCKER_NETWORK_MODE=build-host
 
 COPY --from=cloudflare-sandbox /container-server/sandbox /sandbox
+# cloudflared powers sandbox.tunnels.* (quick-tunnel preview URLs). The base
+# musl sandbox image ships a static cloudflared at /usr/local/bin/cloudflared
+# that runs as-is on this Alpine (docker:dind-rootless) image.
+COPY --from=cloudflare-sandbox /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 
 # Populated from the repo-level tooling source by:
 #   npm run sync:tooling
