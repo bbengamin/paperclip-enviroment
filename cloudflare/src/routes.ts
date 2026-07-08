@@ -61,7 +61,7 @@ const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
 
 // Bumped manually on behavior changes so the /health route can prove which
 // build is actually deployed (deploy drift has burned us before).
-const BRIDGE_VERSION = "0.3.2";
+const BRIDGE_VERSION = "0.3.3";
 
 // Preview hold: how long a retained (reuse) sandbox stays before it is allowed
 // to sleep after a run completes. Armed as the sandbox `sleepAfter` on release.
@@ -549,6 +549,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         previewHoldSeconds: resolvePreviewHoldSeconds(env),
         acquireColdStartRetry: true,
         acquireReadinessGate: true,
+        acquireReuseColdStartRecreate: true,
       },
     });
   }
@@ -658,11 +659,14 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         issueId: body.issueId ?? null,
       });
       const sandbox = await resolveSandbox(env, providerLeaseId, { keepAlive, sleepAfter, normalizeId });
-      // Guard against orphaning a keepAlive sandbox if workspace setup throws
-      // after creation: Paperclip never sees the lease ID in that case, so it
-      // can't clean up. Destroy here unless this is a reuseLease handshake
-      // (where the sandbox may have been created by a prior acquire and we
-      // shouldn't destroy it on a transient setup failure during reattachment).
+      // On a setup failure we always tear down this sandbox before retrying —
+      // for reuse leases too. A healthy reattach re-runs setup idempotently and
+      // never enters the catch, so only a *broken* sandbox reaches it; and
+      // because a reuse id is deterministic, re-polling the same wedged
+      // container (e.g. the cold-start `/tmp/session-*` watch ENOENT) never
+      // recovers. Destroying lets the next attempt provision a genuinely fresh
+      // container under the same id. Its disk is ephemeral and was unreachable
+      // anyway, and Paperclip re-derives the deterministic id, so nothing leaks.
       try {
         await applySandboxKeepAlive(sandbox, keepAlive);
         await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
@@ -681,9 +685,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
           timeoutMs,
         });
       } catch (err) {
-        if (!reuseLease) {
-          await sandbox.destroy().catch(() => undefined);
-        }
+        await sandbox.destroy().catch(() => undefined);
         if (!isColdStartSetupError(err)) throw err;
         if (attempt >= ACQUIRE_SETUP_MAX_ATTEMPTS) {
           const message = err instanceof Error ? err.message : String(err);

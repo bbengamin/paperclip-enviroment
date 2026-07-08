@@ -60,9 +60,15 @@ into every `/exec` sandbox environment. Worker vars/secrets do not otherwise
 cross into the container, so this injection is what lets the in-sandbox agent
 build a signed preview URL against the real bridge host. Because the same Worker
 secret is used to both sign (injected) and verify, the two copies cannot drift.
-Confirm the deploy exposes `bridgeVersion` >= `0.3.2` with
-`previewSigningConfigured`, `previewBaseUrlConfigured`, and `previewHoldSeconds`
-via `GET /health`.
+Confirm the deploy exposes `bridgeVersion` >= `0.3.3` with
+`previewSigningConfigured`, `previewBaseUrlConfigured`, `previewHoldSeconds`, and
+`acquireReuseColdStartRecreate` via `GET /health`.
+
+If a **reuse** lease hits a cold-start wedge during setup (e.g. the SDK's
+`/tmp/session-*` watch `ENOENT` race on a slept/re-acquired container), the
+acquire loop now tears the sandbox down and recreates it fresh under the same
+deterministic id instead of re-polling the wedge until the budget runs out. A
+healthy reattach re-runs setup idempotently and is unaffected.
 
 ## Deploy
 
