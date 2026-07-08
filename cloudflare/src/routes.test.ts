@@ -118,7 +118,7 @@ describe("bridge routes", () => {
         dockerHostNetworkSmoke: true,
         dockerInDocker: true,
         namedSessions: true,
-        previewUrls: true,
+        previewTunnels: true,
         previewSigningConfigured: true,
         previewBaseUrlConfigured: true,
         previewHoldSeconds: 3600,
@@ -127,134 +127,61 @@ describe("bridge routes", () => {
     });
   });
 
-  it("proxies preview requests to the selected sandbox port and strips bridge auth", async () => {
-    const containerFetch = vi.fn().mockResolvedValue(new Response("preview ok", { status: 201 }));
-    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
+  it("opens a quick tunnel and returns its URL for a signed request", async () => {
+    const tunnelsGet = vi
+      .fn()
+      .mockResolvedValue({ url: "https://abc123.trycloudflare.com", hostname: "abc123.trycloudflare.com", id: "t1", port: 3001 });
+    vi.mocked(resolveSandbox).mockResolvedValue({ tunnels: { get: tunnelsGet } } as never);
+    const sig = await signPreview({ port: 3001 });
 
     const response = await handleBridgeRequest(
-      authenticatedRequest("/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?tab=home", {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain",
-          "X-Paperclip-Environment-Id": "env-1",
-        },
-        body: "hello",
-      }),
-      {
-        BRIDGE_AUTH_TOKEN: "secret-token",
-        Sandbox: {} as never,
-      },
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/3001/?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+      ),
+      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never },
     );
 
-    expect(response.status).toBe(201);
-    await expect(response.text()).resolves.toBe("preview ok");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      url: "https://abc123.trycloudflare.com",
+      port: 3001,
+    });
+    expect(tunnelsGet).toHaveBeenCalledWith(3001);
     expect(resolveSandbox).toHaveBeenCalledWith(expect.anything(), "pc-run-1-abcd1234", {
       keepAlive: false,
       sleepAfter: "10m",
       normalizeId: true,
     });
-    expect(containerFetch).toHaveBeenCalledTimes(1);
-    const [proxiedRequest, port] = containerFetch.mock.calls[0] ?? [];
-    expect(port).toBe(27451);
-    expect(proxiedRequest).toBeInstanceOf(Request);
-    expect((proxiedRequest as Request).url).toBe("https://bridge.example.test/dashboard?tab=home");
-    expect((proxiedRequest as Request).headers.get("Authorization")).toBeNull();
-    expect((proxiedRequest as Request).headers.get("X-Paperclip-Environment-Id")).toBeNull();
-    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
-    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Port")).toBe("27451");
-    await expect((proxiedRequest as Request).text()).resolves.toBe("hello");
   });
 
-  it("proxies signed browser preview requests without bridge bearer auth", async () => {
-    const containerFetch = vi.fn().mockResolvedValue(new Response("preview ok", { status: 200 }));
-    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
-    const sig = await signPreview();
+  it("opens a quick tunnel for a bearer-authorized request (no signature)", async () => {
+    const tunnelsGet = vi
+      .fn()
+      .mockResolvedValue({ url: "https://xyz789.trycloudflare.com", hostname: "xyz789.trycloudflare.com", id: "t2", port: 3001 });
+    vi.mocked(resolveSandbox).mockResolvedValue({ tunnels: { get: tunnelsGet } } as never);
 
     const response = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?tab=home&pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
-      ),
-      {
-        BRIDGE_AUTH_TOKEN: "secret-token",
-        PREVIEW_SIGNING_SECRET: "preview-secret",
-        Sandbox: {} as never,
-      },
+      authenticatedRequest("/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/3001/"),
+      { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never },
     );
 
     expect(response.status).toBe(200);
-    expect(containerFetch).toHaveBeenCalledTimes(1);
-    const [proxiedRequest, port] = containerFetch.mock.calls[0] ?? [];
-    expect(port).toBe(27451);
-    expect((proxiedRequest as Request).url).toBe("https://bridge.example.test/dashboard?tab=home");
-    expect((proxiedRequest as Request).headers.get("Authorization")).toBeNull();
-    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
+    await expect(response.json()).resolves.toMatchObject({ url: "https://xyz789.trycloudflare.com" });
+    expect(tunnelsGet).toHaveBeenCalledWith(3001);
   });
 
-  it("sets a pinned preview session cookie on a valid signed request", async () => {
-    const containerFetch = vi.fn().mockResolvedValue(new Response("<html></html>", { status: 200 }));
-    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
-    const sig = await signPreview();
+  it("returns 502 when the quick tunnel cannot be opened", async () => {
+    const tunnelsGet = vi.fn().mockRejectedValue(new Error("cloudflared not ready"));
+    vi.mocked(resolveSandbox).mockResolvedValue({ tunnels: { get: tunnelsGet } } as never);
 
     const response = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
-      ),
-      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never },
+      authenticatedRequest("/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/3001/"),
+      { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never },
     );
 
-    expect(response.status).toBe(200);
-    const setCookie = response.headers.get("Set-Cookie") ?? "";
-    expect(setCookie).toContain("pc_preview=");
-    expect(setCookie).toContain("Path=/");
-    expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("Secure");
-  });
-
-  it("proxies a cookie-pinned root asset request to the pinned sandbox", async () => {
-    const containerFetch = vi.fn().mockResolvedValue(new Response("asset", { status: 200 }));
-    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
-    const env = { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never };
-    const sig = await signPreview();
-
-    // Step 1: the signed top-level request mints the pinning cookie.
-    const first = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
-      ),
-      env,
-    );
-    const cookiePair = (first.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
-    expect(cookiePair).toContain("pc_preview=");
-
-    containerFetch.mockClear();
-
-    // Step 2: a root-absolute asset request carrying only the cookie is proxied.
-    const assetResponse = await handleBridgeRequest(
-      new Request("https://bridge.example.test/_nuxt/logo.webp", {
-        headers: { Cookie: `${cookiePair}; app_session=xyz` },
-      }),
-      env,
-    );
-
-    expect(assetResponse.status).toBe(200);
-    expect(containerFetch).toHaveBeenCalledTimes(1);
-    const [proxiedRequest, port] = containerFetch.mock.calls[0] ?? [];
-    expect(port).toBe(27451);
-    expect((proxiedRequest as Request).url).toBe("https://bridge.example.test/_nuxt/logo.webp");
-    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
-    // Our pinning cookie is stripped, but the app's own cookies are forwarded.
-    const forwardedCookie = (proxiedRequest as Request).headers.get("Cookie") ?? "";
-    expect(forwardedCookie).not.toContain("pc_preview=");
-    expect(forwardedCookie).toContain("app_session=xyz");
-  });
-
-  it("rejects a root asset request that has no valid preview cookie", async () => {
-    const response = await handleBridgeRequest(
-      new Request("https://bridge.example.test/_nuxt/logo.webp"),
-      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never },
-    );
-    expect(response.status).toBe(401);
-    expect(resolveSandbox).not.toHaveBeenCalled();
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({ error: "preview_tunnel_failed" });
   });
 
   it("rejects signed preview requests with invalid signatures", async () => {
@@ -262,7 +189,7 @@ describe("bridge routes", () => {
 
     const response = await handleBridgeRequest(
       new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
       ),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
@@ -280,7 +207,7 @@ describe("bridge routes", () => {
 
     const response = await handleBridgeRequest(
       new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=100&pc_sig=${sig}`,
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=100&pc_sig=${sig}`,
       ),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
@@ -298,7 +225,7 @@ describe("bridge routes", () => {
 
     const response = await handleBridgeRequest(
       new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
       ),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
@@ -312,7 +239,7 @@ describe("bridge routes", () => {
 
   it("rejects malformed preview ports before resolving the sandbox", async () => {
     const response = await handleBridgeRequest(
-      authenticatedRequest("/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/nope/"),
+      authenticatedRequest("/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/nope/"),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
         Sandbox: {} as never,

@@ -60,9 +60,9 @@ into every `/exec` sandbox environment. Worker vars/secrets do not otherwise
 cross into the container, so this injection is what lets the in-sandbox agent
 build a signed preview URL against the real bridge host. Because the same Worker
 secret is used to both sign (injected) and verify, the two copies cannot drift.
-Confirm the deploy exposes `bridgeVersion` >= `0.3.4` with
+Confirm the deploy exposes `bridgeVersion` >= `0.4.0` with
 `previewSigningConfigured`, `previewBaseUrlConfigured`, `previewHoldSeconds`,
-`acquireReuseColdStartRecreate`, and `previewCookieSession` via `GET /health`.
+`acquireReuseColdStartRecreate`, and `previewTunnels` via `GET /health`.
 
 If a **reuse** lease hits a cold-start wedge during setup (e.g. the SDK's
 `/tmp/session-*` watch `ENOENT` race on a slept/re-acquired container), the
@@ -147,59 +147,44 @@ inside a sandbox (via the company `preview-handoff` skill). End-to-end flow:
   slot + billing. A later run then cold-starts a fresh sandbox and the agent
   re-provisions from the branch.
 
-- **Full pages (cookie-pinned session).** A signed link authorizes only the
-  top-level request; a real page then fetches CSS/JS/images at absolute
-  origin-root paths (e.g. `/logo.webp`, `/_nuxt/...`) that carry neither the
-  preview route prefix nor the `pc_*` signature. On a valid signed request the
-  bridge sets a signed, httpOnly, `SameSite=None` cookie (`pc_preview`, scoped to
-  `/`, expiring with the link) that pins the browser to `{lease, port}`. Any
-  later request outside the bridge API namespace that carries it is proxied to
-  the pinned sandbox using its full path. This is framework-agnostic. Limitation:
-  one preview per browser at a time (the cookie pins a single sandbox+port); live
-  HMR websockets are not proxied yet, so dev-mode hot reload may not work.
+- **Full pages via a per-preview origin (quick tunnel).** The agent verifies the
+  app port, then calls the bridge's `preview-tunnel` endpoint; the bridge opens a
+  Cloudflare **quick tunnel** for that sandbox port (`sandbox.tunnels.get(port)`)
+  and returns its `https://<random>.trycloudflare.com` URL, which the agent posts.
+  Because each preview is served on **its own origin**, root-absolute assets
+  (`/logo.webp`, `/_nuxt/...`) and in-app navigation "just work," and **multiple
+  concurrent previews across projects don't collide** — no cookie, no
+  same-origin proxy. Requires `cloudflared` in the image (copied from the base).
 
 Cloudflare container disk is **ephemeral**: a sandbox cannot sleep and wake with
 its workspace or app process intact — the next start has a fresh disk from the
-image. Signed preview links are therefore valid only while the sandbox is warm
-and within the link's expiry (default 1h). The deployed Worker URL is the
+image. The quick tunnel is a `cloudflared` process **inside** the container, so
+it dies when the sandbox sleeps at the end of the preview hold (≈1h). The tunnel
+URL is an **unauthenticated public capability** (unguessable, bounded to the hold
+window) — creating it requires a bearer or signed request, but the resulting URL
+needs no login. For authenticated preview URLs, use `exposePort` + a custom
+domain with wildcard DNS (a future step). The deployed Worker URL is the
 Paperclip bridge API; it does not affect Docker build or container egress.
 
-## Preview Proxy
+## Preview tunnel endpoint
 
-The bridge can proxy HTTP requests from the Worker to a running sandbox port:
-
-```text
-https://<bridge-host>/api/paperclip-sandbox/v1/preview/<providerLeaseId>/<port>/<path>
-```
-
-Example:
+The agent opens a preview by requesting a quick tunnel for a running port. Bearer
+callers (the adapter) are trusted; in-sandbox agents use a signed request so a
+random party cannot open tunnels on our sandboxes:
 
 ```text
-https://paperclip-cloudflare-sandbox-bridge.example.workers.dev/api/paperclip-sandbox/v1/preview/pc-env-.../27451/
+POST/GET https://<bridge-host>/api/paperclip-sandbox/v1/preview-tunnel/<providerLeaseId>/<port>/?pc_issue=<issue>&pc_run=<run>&pc_exp=<unix>&pc_sig=<sig>
 ```
 
-The preview proxy uses Cloudflare's container request forwarding rather than a
-public container IP. Requests must include the bridge bearer token; the bridge
-removes that `Authorization` header before forwarding the request to the
-sandboxed app.
+The signature uses `HMAC-SHA256` over the `paperclip-preview-v1` canonical payload
+(target = `providerLeaseId`); the Worker verifies it, resolves the sandbox, calls
+`sandbox.tunnels.get(port)`, and responds:
 
-Browser-clickable preview links may use the shared signed preview URL contract
-instead of a bearer header:
-
-```text
-https://<bridge-host>/api/paperclip-sandbox/v1/preview/<providerLeaseId>/<port>/<path>?pc_issue=<issue>&pc_run=<run>&pc_exp=<unix>&pc_sig=<sig>
+```json
+{ "ok": true, "provider": "cloudflare", "port": 3001, "url": "https://<random>.trycloudflare.com", "hostname": "<random>.trycloudflare.com" }
 ```
 
-Signed preview URLs use `HMAC-SHA256` with the `paperclip-preview-v1` canonical
-payload from `RL-1405`. The Worker verifies signatures with the
-`PREVIEW_SIGNING_SECRET` secret, derives the target from
-`providerLeaseId`, rejects expired or invalid links before resolving the
-sandbox, and strips signing query parameters plus bridge auth headers before
-forwarding to the sandboxed app.
-
-Non-preview bridge routes remain bearer-token only. Cloudflare preview links are
-still operationally temporary: even a valid signature can stop working when the
-sandbox sleeps or is destroyed.
+All other bridge routes remain bearer-token only.
 
 ## GitHub Actions Deployment
 
