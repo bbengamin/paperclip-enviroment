@@ -154,6 +154,28 @@ Manual smoke path:
 4. Confirm the app opens and that invalid, expired, wrong-target, and disallowed
    port URLs are rejected.
 
+### Preview app supervisor (`paperclip-preview`)
+
+Both images install `paperclip-preview`, a small idempotent supervisor for the
+preview app process. It exists because agents often re-enter a warm environment
+— a persistent SSH container, or a reused/held Cloudflare sandbox — where a
+preview server they started earlier is still running; without a record, they
+waste steps rediscovering ports and killing stale listeners. It records the
+running app in a manifest (`/tmp/paperclip-preview.json`) so re-entry is a status
+check, not a hunt:
+
+```bash
+paperclip-preview status                 # is a preview already serving?
+paperclip-preview start --port 3001 -- npm run dev -- --host 0.0.0.0 --port 3001
+paperclip-preview stop
+```
+
+`start` adopts the port if it already serves HTTP; otherwise it launches the
+command detached (`setsid`/`nohup`) so it survives the run session, then waits
+for the port. On the persistent SSH environment the manifest persists with the
+container; on Cloudflare it lives on ephemeral disk and clears when the sandbox
+sleeps (which is fine — after sleep there is no app to reconcile).
+
 ## Included CLIs
 
 These are installed globally and available in the shell:

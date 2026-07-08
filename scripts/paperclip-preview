@@ -1,0 +1,179 @@
+#!/usr/bin/env sh
+# paperclip-preview — idempotent supervisor for a single preview app process.
+#
+# Why this exists: on a reused/held Cloudflare sandbox an agent re-enters a warm
+# environment where a preview server it started earlier is often still running.
+# Without a record of what/where, agents waste many steps rediscovering ports,
+# killing stale listeners, and restarting (see the RL-2688 run log). This helper
+# gives the agent one durable place to record and reconcile that state:
+#
+#   paperclip-preview start --port <p> [--log <f>] [--timeout <s>] -- <cmd...>
+#   paperclip-preview status
+#   paperclip-preview stop
+#
+# `start` is idempotent: if the port is already serving HTTP it reuses it; only
+# when nothing answers does it (re)launch the command detached (`setsid nohup`)
+# so it survives the run session, then waits for the port. State is recorded in
+# a small JSON manifest so a returning agent runs `status` instead of hunting.
+#
+# The manifest and any relaunched process live on the sandbox's ephemeral disk,
+# which is wiped when the sandbox sleeps — that is fine: after sleep there is no
+# app to reconcile and the agent starts fresh.
+
+set -eu
+
+MANIFEST="${PAPERCLIP_PREVIEW_MANIFEST:-/tmp/paperclip-preview.json}"
+DEFAULT_TIMEOUT=90
+
+log_err() { printf '%s\n' "$*" >&2; }
+
+json_escape() {
+  # Escape backslashes and double quotes for embedding in a JSON string.
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+http_ok() {
+  # Return 0 if something answers HTTP on 127.0.0.1:<port>.
+  _port="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -o /dev/null --max-time 3 "http://127.0.0.1:${_port}/" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O /dev/null -T 3 "http://127.0.0.1:${_port}/" 2>/dev/null
+  else
+    # No HTTP client: fall back to a listener check.
+    command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -q ":${_port}\b"
+  fi
+}
+
+manifest_field() {
+  # Extract a top-level string/number field from the manifest without jq.
+  [ -f "$MANIFEST" ] || return 1
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$MANIFEST" | head -n1
+}
+
+write_manifest() {
+  # write_manifest <port> <pid> <log> <cmd>
+  _port="$1"; _pid="$2"; _log="$3"; _cmd="$4"
+  _now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+  _tmp="${MANIFEST}.tmp.$$"
+  cat > "$_tmp" <<JSON
+{
+  "version": 1,
+  "port": ${_port},
+  "pid": ${_pid},
+  "host": "0.0.0.0",
+  "log": "$(json_escape "$_log")",
+  "cmd": "$(json_escape "$_cmd")",
+  "updatedAt": "${_now}"
+}
+JSON
+  mv "$_tmp" "$MANIFEST"
+}
+
+kill_owned() {
+  # Kill the process group of the pid recorded in the manifest, if any.
+  _pid="$(manifest_field pid 2>/dev/null || true)"
+  case "$_pid" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  kill -TERM "-${_pid}" 2>/dev/null || kill -TERM "${_pid}" 2>/dev/null || true
+  sleep 1
+  kill -KILL "-${_pid}" 2>/dev/null || true
+}
+
+cmd_status() {
+  if [ ! -f "$MANIFEST" ]; then
+    printf '{"serving":false,"reason":"no manifest"}\n'
+    return 0
+  fi
+  _port="$(manifest_field port || true)"
+  cat "$MANIFEST"
+  if [ -n "${_port:-}" ] && http_ok "$_port"; then
+    log_err "paperclip-preview: serving on port ${_port}"
+    return 0
+  fi
+  log_err "paperclip-preview: manifest present but port ${_port:-?} is not answering"
+  return 3
+}
+
+cmd_stop() {
+  kill_owned
+  rm -f "$MANIFEST"
+  log_err "paperclip-preview: stopped"
+}
+
+cmd_start() {
+  _port=""; _log=""; _timeout="$DEFAULT_TIMEOUT"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port) _port="$2"; shift 2 ;;
+      --log) _log="$2"; shift 2 ;;
+      --timeout) _timeout="$2"; shift 2 ;;
+      --) shift; break ;;
+      *) log_err "paperclip-preview start: unexpected argument '$1'"; return 2 ;;
+    esac
+  done
+  case "$_port" in
+    ''|*[!0-9]*) log_err "paperclip-preview start: --port <n> is required"; return 2 ;;
+  esac
+  if [ $# -eq 0 ]; then
+    log_err "paperclip-preview start: a command is required after --"
+    return 2
+  fi
+  [ -n "$_log" ] || _log="/tmp/paperclip-preview-${_port}.log"
+  _cmd="$*"
+
+  # Idempotent: if the port already serves HTTP, adopt it instead of relaunching.
+  if http_ok "$_port"; then
+    _existing_pid="$(manifest_field pid 2>/dev/null || true)"
+    case "$_existing_pid" in ''|*[!0-9]*) _existing_pid=0 ;; esac
+    write_manifest "$_port" "${_existing_pid:-0}" "$_log" "$_cmd"
+    log_err "paperclip-preview: port ${_port} already serving; reusing it (no relaunch)"
+    cat "$MANIFEST"
+    return 0
+  fi
+
+  # Nothing answering: clear any stale process we previously owned, then launch
+  # the command detached so it outlives this run session.
+  kill_owned
+  : > "$_log" 2>/dev/null || true
+  # Detach into its own session so it survives the run session. Prefer setsid
+  # (own process group -> clean group kill later); fall back to plain nohup.
+  if command -v setsid >/dev/null 2>&1; then
+    _pid="$(setsid nohup sh -lc "$_cmd" >"$_log" 2>&1 </dev/null & echo $!)"
+  else
+    nohup sh -lc "$_cmd" >"$_log" 2>&1 </dev/null &
+    _pid="$!"
+  fi
+  write_manifest "$_port" "$_pid" "$_log" "$_cmd"
+
+  # Wait for the port to come up.
+  _elapsed=0
+  while [ "$_elapsed" -lt "$_timeout" ]; do
+    if http_ok "$_port"; then
+      log_err "paperclip-preview: started pid ${_pid}, serving on port ${_port}"
+      cat "$MANIFEST"
+      return 0
+    fi
+    sleep 2
+    _elapsed=$((_elapsed + 2))
+  done
+
+  log_err "paperclip-preview: pid ${_pid} did not serve port ${_port} within ${_timeout}s; last log lines:"
+  tail -n 40 "$_log" >&2 2>/dev/null || true
+  return 1
+}
+
+main() {
+  [ $# -ge 1 ] || { log_err "usage: paperclip-preview {start|status|stop} ..."; return 2; }
+  _sub="$1"; shift
+  case "$_sub" in
+    start) cmd_start "$@" ;;
+    status) cmd_status ;;
+    stop) cmd_stop ;;
+    -h|--help|help) log_err "usage: paperclip-preview {start --port <n> [--log <f>] [--timeout <s>] -- <cmd...>|status|stop}"; return 0 ;;
+    *) log_err "paperclip-preview: unknown subcommand '$_sub'"; return 2 ;;
+  esac
+}
+
+main "$@"

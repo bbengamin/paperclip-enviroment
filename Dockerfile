@@ -25,8 +25,9 @@ ENV NODE_PATH=/usr/local/lib/node_modules
 COPY entrypoint.sh /entrypoint.sh
 COPY scripts/preview-gateway.mjs /usr/local/bin/paperclip-preview-gateway.mjs
 COPY scripts/paperclip-preview-configure /usr/local/bin/paperclip-preview-configure
+COPY scripts/paperclip-preview /usr/local/bin/paperclip-preview
 
-RUN chmod 755 /entrypoint.sh /usr/local/bin/paperclip-preview-gateway.mjs /usr/local/bin/paperclip-preview-configure
+RUN chmod 755 /entrypoint.sh /usr/local/bin/paperclip-preview-gateway.mjs /usr/local/bin/paperclip-preview-configure /usr/local/bin/paperclip-preview
 
 EXPOSE 22 3999
 
