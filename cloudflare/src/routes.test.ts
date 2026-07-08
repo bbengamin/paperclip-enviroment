@@ -573,6 +573,58 @@ describe("bridge routes", () => {
     expect(healthyExec.mock.calls[4]?.[0]).toContain(".paperclip-lease.json");
   });
 
+  it("destroys and recreates a wedged REUSE sandbox so setup can recover", async () => {
+    // A reuse lease id is deterministic, so a wedged container is re-resolved
+    // under the same id every attempt. Setup must still tear it down and let the
+    // next attempt provision a genuinely fresh container — otherwise reuse locks
+    // onto the wedge (the raw `/tmp/session-*` ENOENT failure we hit in prod).
+    const wedgedSandbox = {
+      exec: vi.fn().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "tailscaled not running" }),
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    const healthySandbox = {
+      exec: vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" }),
+      getSession: vi.fn(),
+      createSession: vi.fn(),
+      writeFile: vi.fn(),
+      deleteFile: vi.fn(),
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox)
+      .mockResolvedValueOnce(wedgedSandbox as never)
+      .mockResolvedValueOnce(healthySandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/acquire", {
+        environmentId: "env-1",
+        runId: "run-1",
+        issueId: "RL-1",
+        reuseLease: true,
+        requestedCwd: "/workspace/paperclip",
+      }),
+      { BRIDGE_AUTH_TOKEN: "secret-token", TAILSCALE_AUTHKEY: "tskey-test", Sandbox: {} as never },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { providerLeaseId: string; metadata: { setupAttempts: number } };
+    expect(payload.metadata.setupAttempts).toBe(2);
+    // The wedged reuse sandbox is torn down (previously reuse skipped this and
+    // re-polled the same wedge forever).
+    expect(wedgedSandbox.destroy).toHaveBeenCalledTimes(1);
+    expect(healthySandbox.destroy).not.toHaveBeenCalled();
+    // Reuse id is deterministic: both attempts target the same lease id.
+    const [, firstId] = vi.mocked(resolveSandbox).mock.calls[0] ?? [];
+    const [, secondId] = vi.mocked(resolveSandbox).mock.calls[1] ?? [];
+    expect(firstId).toBe(secondId);
+    expect(payload.providerLeaseId).toBe(firstId);
+  });
+
   it("gives up after the cold-start retry budget and reports the attempt count", async () => {
     const wedgedExec = vi.fn().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "tailscaled not running" });
     const makeWedgedSandbox = () => ({
