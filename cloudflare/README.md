@@ -60,9 +60,9 @@ into every `/exec` sandbox environment. Worker vars/secrets do not otherwise
 cross into the container, so this injection is what lets the in-sandbox agent
 build a signed preview URL against the real bridge host. Because the same Worker
 secret is used to both sign (injected) and verify, the two copies cannot drift.
-Confirm the deploy exposes `bridgeVersion` >= `0.3.3` with
-`previewSigningConfigured`, `previewBaseUrlConfigured`, `previewHoldSeconds`, and
-`acquireReuseColdStartRecreate` via `GET /health`.
+Confirm the deploy exposes `bridgeVersion` >= `0.3.4` with
+`previewSigningConfigured`, `previewBaseUrlConfigured`, `previewHoldSeconds`,
+`acquireReuseColdStartRecreate`, and `previewCookieSession` via `GET /health`.
 
 If a **reuse** lease hits a cold-start wedge during setup (e.g. the SDK's
 `/tmp/session-*` watch `ENOENT` race on a slept/re-acquired container), the
@@ -146,6 +146,17 @@ inside a sandbox (via the company `preview-handoff` skill). End-to-end flow:
   container sleeps — on Cloudflare that scales it to zero and frees the instance
   slot + billing. A later run then cold-starts a fresh sandbox and the agent
   re-provisions from the branch.
+
+- **Full pages (cookie-pinned session).** A signed link authorizes only the
+  top-level request; a real page then fetches CSS/JS/images at absolute
+  origin-root paths (e.g. `/logo.webp`, `/_nuxt/...`) that carry neither the
+  preview route prefix nor the `pc_*` signature. On a valid signed request the
+  bridge sets a signed, httpOnly, `SameSite=None` cookie (`pc_preview`, scoped to
+  `/`, expiring with the link) that pins the browser to `{lease, port}`. Any
+  later request outside the bridge API namespace that carries it is proxied to
+  the pinned sandbox using its full path. This is framework-agnostic. Limitation:
+  one preview per browser at a time (the cookie pins a single sandbox+port); live
+  HMR websockets are not proxied yet, so dev-mode hot reload may not work.
 
 Cloudflare container disk is **ephemeral**: a sandbox cannot sleep and wake with
 its workspace or app process intact — the next start has a fresh disk from the

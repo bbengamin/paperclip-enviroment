@@ -190,6 +190,73 @@ describe("bridge routes", () => {
     expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
   });
 
+  it("sets a pinned preview session cookie on a valid signed request", async () => {
+    const containerFetch = vi.fn().mockResolvedValue(new Response("<html></html>", { status: 200 }));
+    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
+    const sig = await signPreview();
+
+    const response = await handleBridgeRequest(
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+      ),
+      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never },
+    );
+
+    expect(response.status).toBe(200);
+    const setCookie = response.headers.get("Set-Cookie") ?? "";
+    expect(setCookie).toContain("pc_preview=");
+    expect(setCookie).toContain("Path=/");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+  });
+
+  it("proxies a cookie-pinned root asset request to the pinned sandbox", async () => {
+    const containerFetch = vi.fn().mockResolvedValue(new Response("asset", { status: 200 }));
+    vi.mocked(resolveSandbox).mockResolvedValue({ containerFetch } as never);
+    const env = { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never };
+    const sig = await signPreview();
+
+    // Step 1: the signed top-level request mints the pinning cookie.
+    const first = await handleBridgeRequest(
+      new Request(
+        `https://bridge.example.test/api/paperclip-sandbox/v1/preview/pc-run-1-abcd1234/27451/?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
+      ),
+      env,
+    );
+    const cookiePair = (first.headers.get("Set-Cookie") ?? "").split(";")[0] ?? "";
+    expect(cookiePair).toContain("pc_preview=");
+
+    containerFetch.mockClear();
+
+    // Step 2: a root-absolute asset request carrying only the cookie is proxied.
+    const assetResponse = await handleBridgeRequest(
+      new Request("https://bridge.example.test/_nuxt/logo.webp", {
+        headers: { Cookie: `${cookiePair}; app_session=xyz` },
+      }),
+      env,
+    );
+
+    expect(assetResponse.status).toBe(200);
+    expect(containerFetch).toHaveBeenCalledTimes(1);
+    const [proxiedRequest, port] = containerFetch.mock.calls[0] ?? [];
+    expect(port).toBe(27451);
+    expect((proxiedRequest as Request).url).toBe("https://bridge.example.test/_nuxt/logo.webp");
+    expect((proxiedRequest as Request).headers.get("X-Paperclip-Preview-Lease-Id")).toBe("pc-run-1-abcd1234");
+    // Our pinning cookie is stripped, but the app's own cookies are forwarded.
+    const forwardedCookie = (proxiedRequest as Request).headers.get("Cookie") ?? "";
+    expect(forwardedCookie).not.toContain("pc_preview=");
+    expect(forwardedCookie).toContain("app_session=xyz");
+  });
+
+  it("rejects a root asset request that has no valid preview cookie", async () => {
+    const response = await handleBridgeRequest(
+      new Request("https://bridge.example.test/_nuxt/logo.webp"),
+      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never },
+    );
+    expect(response.status).toBe(401);
+    expect(resolveSandbox).not.toHaveBeenCalled();
+  });
+
   it("rejects signed preview requests with invalid signatures", async () => {
     const sig = await signPreview({ secret: "wrong-secret" });
 
