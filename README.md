@@ -14,7 +14,7 @@ Claude, opencode, Playwright, Docker, or Tailscale installation.
 
 ## Deployment paths
 
-Classic Docker / SSH:
+Classic Docker / SSH: 
 
 ```bash
 docker compose up -d --build
