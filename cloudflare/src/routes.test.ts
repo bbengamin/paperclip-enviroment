@@ -121,6 +121,7 @@ describe("bridge routes", () => {
         previewUrls: true,
         previewSigningConfigured: true,
         previewBaseUrlConfigured: true,
+        previewHoldSeconds: 3600,
         reuseLease: true,
       },
     });
@@ -683,5 +684,71 @@ describe("bridge routes", () => {
     )).rejects.toThrow("TAILSCALE_AUTHKEY");
 
     expect(sandbox.destroy).toHaveBeenCalled();
+  });
+
+  it("arms the preview hold on reuse-lease release instead of destroying", async () => {
+    const sandbox = {
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      setSleepAfter: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox).mockResolvedValue(sandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/release", {
+        providerLeaseId: "pc-env-env1-i-abcd1234",
+        reuseLease: true,
+      }),
+      { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never },
+    );
+
+    expect(response.status).toBe(200);
+    // Retained, not destroyed, and switched from keepAlive to a bounded idle
+    // sleep window (default 3600s -> "60m").
+    expect(sandbox.destroy).not.toHaveBeenCalled();
+    expect(sandbox.setKeepAlive).toHaveBeenCalledWith(false);
+    expect(sandbox.setSleepAfter).toHaveBeenCalledWith("60m");
+  });
+
+  it("honors a custom PREVIEW_HOLD_SECONDS when arming the reuse hold", async () => {
+    const sandbox = {
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      setSleepAfter: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox).mockResolvedValue(sandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/release", {
+        providerLeaseId: "pc-env-env1-i-abcd1234",
+        reuseLease: true,
+      }),
+      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_HOLD_SECONDS: "5400", Sandbox: {} as never },
+    );
+
+    expect(response.status).toBe(200);
+    expect(sandbox.setSleepAfter).toHaveBeenCalledWith("90m");
+    expect(sandbox.destroy).not.toHaveBeenCalled();
+  });
+
+  it("destroys the sandbox on a non-reuse release", async () => {
+    const sandbox = {
+      setKeepAlive: vi.fn().mockResolvedValue(undefined),
+      setSleepAfter: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    };
+    vi.mocked(resolveSandbox).mockResolvedValue(sandbox as never);
+
+    const response = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/release", {
+        providerLeaseId: "pc-run-1-abcd1234",
+        reuseLease: false,
+      }),
+      { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never },
+    );
+
+    expect(response.status).toBe(200);
+    expect(sandbox.destroy).toHaveBeenCalledTimes(1);
+    expect(sandbox.setSleepAfter).not.toHaveBeenCalled();
   });
 });

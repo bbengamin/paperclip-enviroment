@@ -36,14 +36,33 @@ npx wrangler secret put PREVIEW_SIGNING_SECRET
 npx wrangler secret put PAPERCLIP_PREVIEW_BASE_URL
 ```
 
+Optional preview hold tuning:
+
+```bash
+# Idle window (seconds) a reused preview sandbox is kept before it is allowed to
+# sleep after a run completes. Default 3600 (1h). On lease release the bridge
+# arms this as the sandbox `sleepAfter` (and drops keepAlive), so a held preview
+# sandbox scales to zero — disk wiped, instance slot + billing freed — after
+# this much inactivity instead of living forever. A later run on the same task
+# renews activity and resets the timer.
+npx wrangler secret put PREVIEW_HOLD_SECONDS   # or set as a plain var
+```
+
+Recommended env config for preview-heavy Cloudflare environments: **`reuseLease`
+on** (sandbox keyed per task, survives task completion for review) and
+**`keepAlive` on** (active runs never sleep mid-run). The bridge converts the
+sandbox to the bounded hold window on release regardless of the keepAlive toggle,
+so held sandboxes always self-clean.
+
 The bridge forwards `PAPERCLIP_PREVIEW_BASE_URL`, the `providerLeaseId` (as the
 signing target), the `cloudflare` environment type, and `PREVIEW_SIGNING_SECRET`
 into every `/exec` sandbox environment. Worker vars/secrets do not otherwise
 cross into the container, so this injection is what lets the in-sandbox agent
 build a signed preview URL against the real bridge host. Because the same Worker
 secret is used to both sign (injected) and verify, the two copies cannot drift.
-Confirm the deploy exposes `bridgeVersion` >= `0.3.1` with
-`previewSigningConfigured` and `previewBaseUrlConfigured` via `GET /health`.
+Confirm the deploy exposes `bridgeVersion` >= `0.3.2` with
+`previewSigningConfigured`, `previewBaseUrlConfigured`, and `previewHoldSeconds`
+via `GET /health`.
 
 ## Deploy
 
