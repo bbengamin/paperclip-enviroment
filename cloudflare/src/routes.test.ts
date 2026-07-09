@@ -61,33 +61,6 @@ function authenticatedRequest(pathname: string, init: RequestInit = {}): Request
   });
 }
 
-function base64Url(input: ArrayBuffer): string {
-  let raw = "";
-  for (const byte of new Uint8Array(input)) raw += String.fromCharCode(byte);
-  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-async function signPreview(input: {
-  secret?: string;
-  target?: string;
-  issue?: string;
-  run?: string;
-  port?: number;
-  exp?: string;
-} = {}) {
-  const secret = input.secret ?? "preview-secret";
-  const payload = [
-    "paperclip-preview-v1",
-    `target=${input.target ?? "pc-run-1-abcd1234"}`,
-    `issue=${input.issue ?? "RL-1407"}`,
-    `run=${input.run ?? "run-1"}`,
-    `port=${input.port ?? 27451}`,
-    `exp=${input.exp ?? "4102444800"}`,
-  ].join("\n");
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return base64Url(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
-}
 
 describe("bridge routes", () => {
   beforeEach(() => {
@@ -104,8 +77,6 @@ describe("bridge routes", () => {
       }),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
-        PREVIEW_SIGNING_SECRET: "preview-secret",
-        PAPERCLIP_PREVIEW_BASE_URL: "https://bridge.example.workers.dev",
         TAILSCALE_AUTHKEY: "tskey-test",
         Sandbox: {} as never,
       },
@@ -118,136 +89,11 @@ describe("bridge routes", () => {
         dockerHostNetworkSmoke: true,
         dockerInDocker: true,
         namedSessions: true,
-        previewTunnels: true,
-        previewSigningConfigured: true,
-        previewBaseUrlConfigured: true,
+        previewAgentTunnels: true,
         previewHoldSeconds: 3600,
         reuseLease: true,
       },
     });
-  });
-
-  it("opens a quick tunnel and returns its URL for a signed request", async () => {
-    const tunnelsGet = vi
-      .fn()
-      .mockResolvedValue({ url: "https://abc123.trycloudflare.com", hostname: "abc123.trycloudflare.com", id: "t1", port: 3001 });
-    vi.mocked(resolveSandbox).mockResolvedValue({ tunnels: { get: tunnelsGet } } as never);
-    const sig = await signPreview({ port: 3001 });
-
-    const response = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/3001/?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
-      ),
-      { BRIDGE_AUTH_TOKEN: "secret-token", PREVIEW_SIGNING_SECRET: "preview-secret", Sandbox: {} as never },
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      ok: true,
-      url: "https://abc123.trycloudflare.com",
-      port: 3001,
-    });
-    expect(tunnelsGet).toHaveBeenCalledWith(3001);
-    expect(resolveSandbox).toHaveBeenCalledWith(expect.anything(), "pc-run-1-abcd1234", {
-      keepAlive: false,
-      sleepAfter: "10m",
-      normalizeId: true,
-    });
-  });
-
-  it("opens a quick tunnel for a bearer-authorized request (no signature)", async () => {
-    const tunnelsGet = vi
-      .fn()
-      .mockResolvedValue({ url: "https://xyz789.trycloudflare.com", hostname: "xyz789.trycloudflare.com", id: "t2", port: 3001 });
-    vi.mocked(resolveSandbox).mockResolvedValue({ tunnels: { get: tunnelsGet } } as never);
-
-    const response = await handleBridgeRequest(
-      authenticatedRequest("/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/3001/"),
-      { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never },
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ url: "https://xyz789.trycloudflare.com" });
-    expect(tunnelsGet).toHaveBeenCalledWith(3001);
-  });
-
-  it("returns 502 when the quick tunnel cannot be opened", async () => {
-    const tunnelsGet = vi.fn().mockRejectedValue(new Error("cloudflared not ready"));
-    vi.mocked(resolveSandbox).mockResolvedValue({ tunnels: { get: tunnelsGet } } as never);
-
-    const response = await handleBridgeRequest(
-      authenticatedRequest("/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/3001/"),
-      { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never },
-    );
-
-    expect(response.status).toBe(502);
-    await expect(response.json()).resolves.toMatchObject({ error: "preview_tunnel_failed" });
-  });
-
-  it("rejects signed preview requests with invalid signatures", async () => {
-    const sig = await signPreview({ secret: "wrong-secret" });
-
-    const response = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
-      ),
-      {
-        BRIDGE_AUTH_TOKEN: "secret-token",
-        PREVIEW_SIGNING_SECRET: "preview-secret",
-        Sandbox: {} as never,
-      },
-    );
-
-    expect(response.status).toBe(401);
-    expect(resolveSandbox).not.toHaveBeenCalled();
-  });
-
-  it("rejects expired signed preview requests", async () => {
-    const sig = await signPreview({ exp: "100" });
-
-    const response = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=100&pc_sig=${sig}`,
-      ),
-      {
-        BRIDGE_AUTH_TOKEN: "secret-token",
-        PREVIEW_SIGNING_SECRET: "preview-secret",
-        Sandbox: {} as never,
-      },
-    );
-
-    expect(response.status).toBe(410);
-    expect(resolveSandbox).not.toHaveBeenCalled();
-  });
-
-  it("rejects signed preview requests when the signing secret is missing", async () => {
-    const sig = await signPreview();
-
-    const response = await handleBridgeRequest(
-      new Request(
-        `https://bridge.example.test/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/27451/dashboard?pc_issue=RL-1407&pc_run=run-1&pc_exp=4102444800&pc_sig=${sig}`,
-      ),
-      {
-        BRIDGE_AUTH_TOKEN: "secret-token",
-        Sandbox: {} as never,
-      },
-    );
-
-    expect(response.status).toBe(503);
-    expect(resolveSandbox).not.toHaveBeenCalled();
-  });
-
-  it("rejects malformed preview ports before resolving the sandbox", async () => {
-    const response = await handleBridgeRequest(
-      authenticatedRequest("/api/paperclip-sandbox/v1/preview-tunnel/pc-run-1-abcd1234/nope/"),
-      {
-        BRIDGE_AUTH_TOKEN: "secret-token",
-        Sandbox: {} as never,
-      },
-    );
-
-    expect(response.status).toBe(400);
-    expect(resolveSandbox).not.toHaveBeenCalled();
   });
 
   it("writes lease sentinels through direct sandbox exec during bootstrap", async () => {
@@ -462,7 +308,7 @@ describe("bridge routes", () => {
     expect(commandArg).toContain("localhost");
   });
 
-  it("injects authoritative preview signing env into sandbox exec commands", async () => {
+  it("injects the cloudflare preview environment type into sandbox exec commands", async () => {
     const sessionExec = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
     const sandbox = {
       getSession: vi.fn().mockResolvedValue({ exec: sessionExec }),
@@ -478,16 +324,11 @@ describe("bridge routes", () => {
         providerLeaseId: "pc-run-1-abcd1234",
         command: "codex",
         args: ["exec", "-"],
-        // A caller-supplied signing secret must be overridden by the Worker's
-        // own secret so the signer always matches this Worker's verifier.
-        env: { PREVIEW_SIGNING_SECRET: "stale-caller-secret" },
         sessionStrategy: "named",
         sessionId: "paperclip",
       }),
       {
         BRIDGE_AUTH_TOKEN: "secret-token",
-        PREVIEW_SIGNING_SECRET: "worker-preview-secret",
-        PAPERCLIP_PREVIEW_BASE_URL: "https://bridge.example.workers.dev",
         TAILSCALE_AUTHKEY: "tskey-test",
         Sandbox: {} as never,
       },
@@ -495,18 +336,13 @@ describe("bridge routes", () => {
 
     expect(response.status).toBe(200);
     const commandArg = sessionExec.mock.calls[0]?.[0] as string;
-    expect(commandArg).toContain("PAPERCLIP_PREVIEW_BASE_URL=");
-    expect(commandArg).toContain("https://bridge.example.workers.dev");
+    // Previews are agent-side (cloudflared); the bridge only tells the agent the
+    // environment type so the skill picks the tunnel flow. No signing secret or
+    // base URL is injected anymore.
     expect(commandArg).toContain("PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE=");
     expect(commandArg).toContain("cloudflare");
-    // The canonical signing target and lease id are the providerLeaseId.
-    expect(commandArg).toContain("PAPERCLIP_PREVIEW_TARGET_ID=");
-    expect(commandArg).toContain("PAPERCLIP_PROVIDER_LEASE_ID=");
-    expect(commandArg).toContain("pc-run-1-abcd1234");
-    // Worker secret wins over the caller-supplied value.
-    expect(commandArg).toContain("PREVIEW_SIGNING_SECRET=");
-    expect(commandArg).toContain("worker-preview-secret");
-    expect(commandArg).not.toContain("stale-caller-secret");
+    expect(commandArg).not.toContain("PREVIEW_SIGNING_SECRET=");
+    expect(commandArg).not.toContain("PAPERCLIP_PREVIEW_BASE_URL=");
   });
 
   it("retries lease setup on a fresh sandbox when the container cold-boot wedges", async () => {

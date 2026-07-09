@@ -164,14 +164,93 @@ cmd_start() {
   return 1
 }
 
+# Open (or reuse) a Cloudflare quick tunnel for a local port and print its
+# public https://<random>.trycloudflare.com URL. Runs cloudflared directly in
+# the container (the binary is baked into the image) — this deliberately avoids
+# the SDK's `sandbox.tunnels.*`, which needs the RPC transport and would drop the
+# agent's in-flight run when switched mid-exec.
+cmd_tunnel() {
+  _port=""; _timeout=45
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port) _port="$2"; shift 2 ;;
+      --timeout) _timeout="$2"; shift 2 ;;
+      *) log_err "paperclip-preview tunnel: unexpected argument '$1'"; return 2 ;;
+    esac
+  done
+  case "$_port" in
+    ''|*[!0-9]*) log_err "paperclip-preview tunnel: --port <n> is required"; return 2 ;;
+  esac
+  if ! command -v cloudflared >/dev/null 2>&1; then
+    log_err "paperclip-preview tunnel: cloudflared not found in the image"
+    return 3
+  fi
+
+  _tmanifest="/tmp/paperclip-preview-tunnel-${_port}.json"
+  _tlog="/tmp/paperclip-cloudflared-${_port}.log"
+
+  # Idempotent: reuse a live tunnel for this port if we already captured its URL.
+  if [ -f "$_tmanifest" ]; then
+    _existing_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$_tmanifest" | head -n1)"
+    _existing_url="$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_tmanifest" | head -n1)"
+    if [ -n "$_existing_pid" ] && kill -0 "$_existing_pid" 2>/dev/null && [ -n "$_existing_url" ]; then
+      log_err "paperclip-preview: reusing existing tunnel for port ${_port}"
+      printf '%s\n' "$_existing_url"
+      return 0
+    fi
+    [ -n "$_existing_pid" ] && { kill -TERM "-${_existing_pid}" 2>/dev/null || kill -TERM "${_existing_pid}" 2>/dev/null || true; }
+  fi
+
+  : > "$_tlog" 2>/dev/null || true
+  # Force http2 (over 443): quick tunnels default to QUIC (UDP 7844), which some
+  # sandbox egress paths block; 443 already works for npm/git in these sandboxes.
+  if command -v setsid >/dev/null 2>&1; then
+    _pid="$(setsid nohup cloudflared tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:${_port}" >"$_tlog" 2>&1 </dev/null & echo $!)"
+  else
+    nohup cloudflared tunnel --no-autoupdate --protocol http2 --url "http://127.0.0.1:${_port}" >"$_tlog" 2>&1 </dev/null &
+    _pid="$!"
+  fi
+
+  _elapsed=0
+  while [ "$_elapsed" -lt "$_timeout" ]; do
+    _url="$(grep -oE 'https://[a-zA-Z0-9][-a-zA-Z0-9]*\.trycloudflare\.com' "$_tlog" 2>/dev/null | head -n1)"
+    if [ -n "$_url" ]; then
+      _now="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+      _tmp="${_tmanifest}.tmp.$$"
+      cat > "$_tmp" <<JSON
+{
+  "version": 1,
+  "port": ${_port},
+  "pid": ${_pid},
+  "url": "$(json_escape "$_url")",
+  "log": "$(json_escape "$_tlog")",
+  "protocol": "http2",
+  "updatedAt": "${_now}"
+}
+JSON
+      mv "$_tmp" "$_tmanifest"
+      log_err "paperclip-preview: cloudflared tunnel up for port ${_port} (pid ${_pid})"
+      printf '%s\n' "$_url"
+      return 0
+    fi
+    sleep 2
+    _elapsed=$((_elapsed + 2))
+  done
+
+  log_err "paperclip-preview: cloudflared did not produce a tunnel URL for port ${_port} within ${_timeout}s; last log lines:"
+  tail -n 40 "$_tlog" >&2 2>/dev/null || true
+  return 1
+}
+
 main() {
-  [ $# -ge 1 ] || { log_err "usage: paperclip-preview {start|status|stop} ..."; return 2; }
+  [ $# -ge 1 ] || { log_err "usage: paperclip-preview {start|status|stop|tunnel} ..."; return 2; }
   _sub="$1"; shift
   case "$_sub" in
     start) cmd_start "$@" ;;
     status) cmd_status ;;
     stop) cmd_stop ;;
-    -h|--help|help) log_err "usage: paperclip-preview {start --port <n> [--log <f>] [--timeout <s>] -- <cmd...>|status|stop}"; return 0 ;;
+    tunnel) cmd_tunnel "$@" ;;
+    -h|--help|help) log_err "usage: paperclip-preview {start --port <n> [--log <f>] [--timeout <s>] -- <cmd...>|status|stop|tunnel --port <n> [--timeout <s>]}"; return 0 ;;
     *) log_err "paperclip-preview: unknown subcommand '$_sub'"; return 2 ;;
   esac
 }
