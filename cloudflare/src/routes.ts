@@ -57,15 +57,10 @@ interface ExecuteRequestBody {
   sessionId?: string;
 }
 
-// Quick-tunnel preview endpoint: given a lease + port, opens a Cloudflare quick
-// tunnel for that sandbox port and returns its `*.trycloudflare.com` URL. Signed
-// (agent) or bearer (adapter) callers only — the URL itself is then a public
-// capability that dies with the sandbox at the end of the preview hold.
-const PREVIEW_TUNNEL_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview-tunnel/";
 
 // Bumped manually on behavior changes so the /health route can prove which
 // build is actually deployed (deploy drift has burned us before).
-const BRIDGE_VERSION = "0.4.0";
+const BRIDGE_VERSION = "0.4.1";
 
 // Preview hold: how long a retained (reuse) sandbox stays before it is allowed
 // to sleep after a run completes. Armed as the sandbox `sleepAfter` on release.
@@ -156,23 +151,12 @@ function withTailscaleProxyEnv(env: BridgeEnv, commandEnv?: Record<string, strin
 // at exec time. These values are authoritative and override any same-named keys
 // the caller passed, which guarantees the signer secret always matches the
 // secret this same Worker verifies with (no two-copies drift).
-function withPreviewEnv(
-  env: BridgeEnv,
-  providerLeaseId: string,
-  commandEnv?: Record<string, string>,
-): Record<string, string> | undefined {
-  const injected: Record<string, string> = {
-    // For Cloudflare the canonical `target=` line is the providerLeaseId, which
-    // is also the value the agent must place in the preview URL path.
-    PAPERCLIP_PREVIEW_TARGET_ID: providerLeaseId,
-    PAPERCLIP_PROVIDER_LEASE_ID: providerLeaseId,
-    PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE: "cloudflare",
-  };
-  const baseUrl = env.PAPERCLIP_PREVIEW_BASE_URL?.trim();
-  if (baseUrl) injected.PAPERCLIP_PREVIEW_BASE_URL = baseUrl;
-  const secret = env.PREVIEW_SIGNING_SECRET?.trim();
-  if (secret) injected.PREVIEW_SIGNING_SECRET = secret;
-  return { ...(commandEnv ?? {}), ...injected };
+// Tell the in-sandbox agent it is on Cloudflare so the preview-handoff skill
+// opens a quick tunnel via `cloudflared` (the binary is baked into the image)
+// rather than trying to reach a signing/proxy endpoint. Previews are fully
+// agent-side now, so no base URL, target, or signing secret is injected.
+function withPreviewEnv(commandEnv?: Record<string, string>): Record<string, string> | undefined {
+  return { ...(commandEnv ?? {}), PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE: "cloudflare" };
 }
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
@@ -197,116 +181,6 @@ function readPort(value: string): number | null {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
   return port;
-}
-
-function base64Url(bytes: ArrayBuffer): string {
-  let raw = "";
-  for (const byte of new Uint8Array(bytes)) raw += String.fromCharCode(byte);
-  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-async function hmacSha256Base64Url(secret: string, payload: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return base64Url(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
-}
-
-function timingSafeStringEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder();
-  const left = encoder.encode(a);
-  const right = encoder.encode(b);
-  if (left.length !== right.length) return false;
-  let diff = 0;
-  for (let i = 0; i < left.length; i++) diff |= left[i]! ^ right[i]!;
-  return diff === 0;
-}
-
-function canonicalPreviewPayload(input: {
-  target: string;
-  issue: string;
-  run: string;
-  port: number;
-  exp: string;
-}): string {
-  return [
-    "paperclip-preview-v1",
-    `target=${input.target}`,
-    `issue=${input.issue}`,
-    `run=${input.run}`,
-    `port=${input.port}`,
-    `exp=${input.exp}`,
-  ].join("\n");
-}
-
-async function verifySignedPreviewUrl(
-  env: BridgeEnv,
-  url: URL,
-  providerLeaseId: string,
-  port: number,
-): Promise<Response | null> {
-  const secret = env.PREVIEW_SIGNING_SECRET?.trim();
-  if (!secret) {
-    return toErrorResponse(
-      503,
-      "preview_signing_unavailable",
-      "PREVIEW_SIGNING_SECRET is required for signed preview links.",
-    );
-  }
-
-  const issue = url.searchParams.get("pc_issue");
-  const run = url.searchParams.get("pc_run");
-  const exp = url.searchParams.get("pc_exp");
-  const sig = url.searchParams.get("pc_sig");
-  if (!issue || !run || !exp || !sig) {
-    return toErrorResponse(401, "unauthorized", "Missing signed preview query parameters.");
-  }
-
-  if (!/^\d+$/.test(exp)) {
-    return toErrorResponse(401, "unauthorized", "Invalid preview expiry.");
-  }
-
-  const expSeconds = Number(exp);
-  if (!Number.isSafeInteger(expSeconds) || expSeconds <= 0) {
-    return toErrorResponse(401, "unauthorized", "Invalid preview expiry.");
-  }
-  if (expSeconds <= Math.floor(Date.now() / 1000)) {
-    return toErrorResponse(410, "preview_expired", "Signed preview link has expired.");
-  }
-
-  const payload = canonicalPreviewPayload({ target: providerLeaseId, issue, run, port, exp });
-  const expected = await hmacSha256Base64Url(secret, payload);
-  if (!timingSafeStringEqual(expected, sig)) {
-    return toErrorResponse(401, "unauthorized", "Invalid signed preview URL.");
-  }
-  return null;
-}
-
-function hasSignedPreviewParams(url: URL): boolean {
-  return ["pc_issue", "pc_run", "pc_exp", "pc_sig"].some((param) => url.searchParams.has(param));
-}
-
-// Quick-tunnel previews: instead of proxying app assets through this Worker
-// (which loses root-absolute asset paths without a cookie hack), the bridge
-// opens a Cloudflare quick tunnel for the sandbox port and returns its
-// `*.trycloudflare.com` URL. Each preview is then its own origin, so full pages
-// and multiple concurrent previews work with no cookies. The tunnel lives in
-// the container's cloudflared process, so it dies when the sandbox sleeps at the
-// end of the preview hold (bounded, unauthenticated capability URL).
-async function openPreviewTunnel(
-  sandbox: CloudflareSandbox,
-  port: number,
-): Promise<{ url: string; hostname?: string }> {
-  const info = (await sandbox.tunnels.get(port)) as { url?: string; hostname?: string };
-  if (!info || typeof info.url !== "string" || info.url.length === 0) {
-    throw new Error("Cloudflare quick tunnel did not return a URL.");
-  }
-  return { url: info.url, hostname: info.hostname };
 }
 
 function requireTailscaleAuthKey(env: BridgeEnv): string {
@@ -512,9 +386,9 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
 
   const isAuthorized = await isAuthorizedRequest(request, env.BRIDGE_AUTH_TOKEN);
 
-  // The preview-tunnel endpoint accepts a signed (non-bearer) request from the
-  // in-sandbox agent; every other route requires the bearer token.
-  if (!isAuthorized && !pathname.startsWith(PREVIEW_TUNNEL_ROUTE_PREFIX)) {
+  // Every bridge route requires the bearer token. (Previews are opened by the
+  // in-sandbox agent via cloudflared, not through the bridge.)
+  if (!isAuthorized) {
     return toErrorResponse(401, "unauthorized", "Missing or invalid bridge bearer token.");
   }
 
@@ -530,53 +404,13 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         namedSessions: true,
         dockerInDocker: true,
         dockerHostNetworkSmoke: true,
-        previewTunnels: true,
-        previewSigningConfigured: Boolean(env.PREVIEW_SIGNING_SECRET?.trim()),
-        previewBaseUrlConfigured: Boolean(env.PAPERCLIP_PREVIEW_BASE_URL?.trim()),
+        previewAgentTunnels: true,
         previewHoldSeconds: resolvePreviewHoldSeconds(env),
         acquireColdStartRetry: true,
         acquireReadinessGate: true,
         acquireReuseColdStartRecreate: true,
       },
     });
-  }
-
-  if (pathname.startsWith(PREVIEW_TUNNEL_ROUTE_PREFIX)) {
-    const suffix = pathname.slice(PREVIEW_TUNNEL_ROUTE_PREFIX.length);
-    const [encodedProviderLeaseId, portSegment] = suffix.split("/", 2);
-    const providerLeaseId = decodeURIComponent(encodedProviderLeaseId ?? "");
-    if (!providerLeaseId || !portSegment) {
-      return toErrorResponse(400, "invalid_request", "Preview tunnel URL must include providerLeaseId and port.");
-    }
-
-    const port = readPort(portSegment);
-    if (port === null) {
-      return toErrorResponse(400, "invalid_request", "Preview port must be an integer from 1 to 65535.");
-    }
-
-    // Bearer callers (the adapter) are trusted; otherwise require a valid signed
-    // request so a random party can't open tunnels on our sandboxes.
-    if (!isAuthorized) {
-      if (!hasSignedPreviewParams(url)) {
-        return toErrorResponse(401, "unauthorized", "Missing bridge bearer token or signed preview query parameters.");
-      }
-      const rejected = await verifySignedPreviewUrl(env, url, providerLeaseId, port);
-      if (rejected) return rejected;
-    }
-
-    const sandbox = await resolveSandbox(env, providerLeaseId, {
-      keepAlive: false,
-      sleepAfter: "10m",
-      normalizeId: true,
-    });
-    try {
-      const tunnel = await openPreviewTunnel(sandbox, port);
-      console.log(JSON.stringify({ event: "bridge.preview.tunnel", providerLeaseId, port, url: tunnel.url }));
-      return toJsonResponse({ ok: true, provider: "cloudflare", port, url: tunnel.url, hostname: tunnel.hostname });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return toErrorResponse(502, "preview_tunnel_failed", `Failed to open preview tunnel: ${message}`);
-    }
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/probe") {
@@ -890,7 +724,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
               command: body.command!,
               args: Array.isArray(body.args) ? body.args.filter((value): value is string => typeof value === "string") : [],
               cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-              env: withPreviewEnv(env, body.providerLeaseId!, withTailscaleProxyEnv(env, body.env)),
+              env: withPreviewEnv(withTailscaleProxyEnv(env, body.env)),
               stdin: body.stdin ?? null,
               timeoutMs: readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS),
               sessionStrategy,
@@ -958,7 +792,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       command: body.command,
       args: Array.isArray(body.args) ? body.args.filter((value): value is string => typeof value === "string") : [],
       cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-      env: withPreviewEnv(env, body.providerLeaseId, withTailscaleProxyEnv(env, body.env)),
+      env: withPreviewEnv(withTailscaleProxyEnv(env, body.env)),
       stdin: body.stdin ?? null,
       timeoutMs: readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS),
       sessionStrategy,
