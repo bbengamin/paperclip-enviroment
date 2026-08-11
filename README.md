@@ -175,6 +175,8 @@ shell tracing around container startup or authentication commands.
 These are installed globally and available in the shell:
 
 ```bash
+node --version
+npm --version
 claude --version
 codex --version
 opencode --version
