@@ -32,14 +32,31 @@ PACKAGES=(
   xz-utils
 )
 
-if [ "${INSTALL_APT_NPM:-0}" = "1" ]; then
-  PACKAGES+=(npm)
-fi
-
 apt-get install -y --no-install-recommends "${PACKAGES[@]}"
+
+if [ "${INSTALL_APT_NPM:-0}" = "1" ]; then
+  if [[ ! "${SSH_NODE_MAJOR:-}" =~ ^[0-9]+$ ]]; then
+    echo "SSH_NODE_MAJOR must be a numeric major version" >&2
+    exit 1
+  fi
+
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key" \
+    -o /etc/apt/keyrings/nodesource.asc
+  chmod a+r /etc/apt/keyrings/nodesource.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_${SSH_NODE_MAJOR}.x nodistro main" \
+    >/etc/apt/sources.list.d/nodesource.list
+  apt-get update
+  apt-get install -y --no-install-recommends nodejs
+fi
 
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required but was not found; set INSTALL_APT_NPM=1 for base images without npm" >&2
+  exit 1
+fi
+
+if [ "${INSTALL_APT_NPM:-0}" = "1" ] && [ "$(node --version | cut -d . -f 1)" != "v${SSH_NODE_MAJOR}" ]; then
+  echo "expected Node.js ${SSH_NODE_MAJOR}.x, found $(node --version)" >&2
   exit 1
 fi
 

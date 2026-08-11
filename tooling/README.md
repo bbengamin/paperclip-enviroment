@@ -5,6 +5,8 @@ Both deployment modes consume it through the installer scripts in `scripts/`.
 
 | Tool | Classic Docker / SSH | Cloudflare sandbox | Version policy | Purpose | Change here |
 |---|---:|---:|---|---|---|
+| Node.js + npm | yes | yes | Classic: `SSH_NODE_MAJOR` (22 LTS); Cloudflare: Alpine stable | Runtime for installed agent CLIs | `tooling/apps.env`, installer scripts |
+| GitHub CLI | yes | no | Ubuntu 24.04 apt package | HTTPS Git credential helper for SSH workers | `Dockerfile` |
 | Codex CLI | yes | yes | `CODEX_VERSION` | Paperclip `codex_remote` runs | `tooling/apps.env` |
 | Claude Code CLI | yes | yes | `CLAUDE_VERSION` | Claude-based agent runs | `tooling/apps.env` |
 | opencode CLI | yes | yes | `OPENCODE_VERSION` | opencode-based agent runs | `tooling/apps.env` |

@@ -13,6 +13,7 @@ RUN chmod 755 /tmp/paperclip-tooling/*.sh \
     && /tmp/paperclip-tooling/install-tailscale.sh \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        gh \
         openssh-server \
         openssl \
         passwd \
@@ -22,12 +23,19 @@ RUN chmod 755 /tmp/paperclip-tooling/*.sh \
 
 ENV NODE_PATH=/usr/local/lib/node_modules
 
+RUN mkdir -p /usr/local/libexec
+
+COPY scripts/project-ssh-github-env.sh /usr/local/libexec/project-ssh-github-env
 COPY entrypoint.sh /entrypoint.sh
 COPY scripts/preview-gateway.mjs /usr/local/bin/paperclip-preview-gateway.mjs
 COPY scripts/paperclip-preview-configure /usr/local/bin/paperclip-preview-configure
 COPY scripts/paperclip-preview /usr/local/bin/paperclip-preview
 
-RUN chmod 755 /entrypoint.sh /usr/local/bin/paperclip-preview-gateway.mjs /usr/local/bin/paperclip-preview-configure /usr/local/bin/paperclip-preview
+RUN chmod 755 /entrypoint.sh /usr/local/libexec/project-ssh-github-env \
+      /usr/local/bin/paperclip-preview-gateway.mjs /usr/local/bin/paperclip-preview-configure \
+      /usr/local/bin/paperclip-preview \
+    && git config --system credential.https://github.com.helper '!/usr/bin/gh auth git-credential' \
+    && git config --system credential.https://gist.github.com.helper '!/usr/bin/gh auth git-credential'
 
 EXPOSE 22 3999
 
