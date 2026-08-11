@@ -7,7 +7,7 @@ Both deployment modes consume it through the installer scripts in `scripts/`.
 |---|---:|---:|---|---|---|
 | Node.js + npm | yes | yes | Classic: `SSH_NODE_MAJOR` (22 LTS); Cloudflare: Alpine stable | Runtime for installed agent CLIs | `tooling/apps.env`, installer scripts |
 | GitHub CLI | yes | no | Ubuntu 24.04 apt package | HTTPS Git credential helper for SSH workers | `Dockerfile` |
-| Codex CLI | yes | yes | `CODEX_VERSION` | Paperclip `codex_remote` runs | `tooling/apps.env` |
+| Codex CLI | yes | yes | npm `latest` at image build time (`CODEX_VERSION`) | Paperclip `codex_remote` runs | `tooling/apps.env` |
 | Claude Code CLI | yes | yes | `CLAUDE_VERSION` | Claude-based agent runs | `tooling/apps.env` |
 | opencode CLI | yes | yes | `OPENCODE_VERSION` | opencode-based agent runs | `tooling/apps.env` |
 | Playwright CLI + Chromium | yes | yes | `PLAYWRIGHT_VERSION`, `PLAYWRIGHT_BROWSER` | Browser smoke tests | `tooling/apps.env` |
@@ -22,3 +22,7 @@ Docker deployment starts rootless dockerd from `entrypoint.sh`; the Cloudflare
 sandbox image follows Cloudflare's Docker-in-Docker guidance by using
 `docker:dind-rootless`, copying in the Cloudflare sandbox runtime, and starting
 `dockerd` from `cloudflare/boot-docker-for-dind.sh`.
+
+Agent CLI versions set to `latest` are resolved only while an image is built.
+Running environments do not self-modify; rebuild and recreate them to adopt a
+new npm release.
