@@ -46,6 +46,7 @@ This container gives remote users shell access to an Ubuntu 24.04 container on t
 - provides `/workspace` as a dedicated Paperclip runtime volume
 - mounts this environment repo at `/environment` as read-only reference material
 - includes `claude`, `codex`, and `opencode` CLIs in the image
+- includes GitHub CLI with token-backed HTTPS Git authentication for SSH sessions
 - includes Playwright with Chromium preinstalled for browserless testing
 
 ## First run
@@ -75,6 +76,99 @@ ssh -p 2222 guest@<tailscale-name-or-ip>
 ```
 
 If you change `SSH_USER` in `.env`, use that username instead.
+
+## GitHub authentication for SSH workers
+
+The classic SSH worker can provide a baseline GitHub token to every guest SSH
+session, including one-shot commands. This is useful for unattended clones,
+fetches, and pushes over HTTPS. Paperclip's project- or agent-level `GH_TOKEN`
+or `GITHUB_TOKEN` still takes precedence for managed runs.
+
+### Prerequisites and deployment
+
+1. Create a least-privilege GitHub token for the repositories the baseline
+   worker identity must access. Prefer a fine-grained token with an expiry.
+2. Keep the deployment `.env` uncommitted and readable only by its owner:
+
+   ```bash
+   chmod 600 .env
+   ```
+
+3. Set the host-side secret in `.env` (never in `.env.example`):
+
+   ```dotenv
+   SSH_GITHUB_TOKEN=<github-token>
+   ```
+
+4. Rebuild and recreate the SSH service:
+
+   ```bash
+   docker compose up -d --build --force-recreate ubuntu-ssh
+   ```
+
+The entrypoint projects the secret into the guest SSH environment as both
+`GH_TOKEN` and `GITHUB_TOKEN`. It also records a one-way fingerprint so the
+installed `gh` launcher can honor a Paperclip run that overrides only
+`GITHUB_TOKEN`; the token itself is not written to Git credential files or Git
+remote URLs. Git uses `gh auth git-credential` through system configuration.
+
+### Verification
+
+Avoid commands such as `env`, `set`, `docker compose config`, or `echo
+$GH_TOKEN`, which can disclose the secret. Instead, verify presence and auth
+without printing it:
+
+```bash
+ssh -p 2222 guest@<host> 'test -n "$GH_TOKEN" && test -n "$GITHUB_TOKEN"'
+ssh -p 2222 guest@<host> 'gh auth status >/dev/null'
+ssh -p 2222 guest@<host> 'git config --get-all credential.https://github.com.helper'
+```
+
+Verify an interactive shell separately, without displaying either value:
+
+```console
+$ ssh -p 2222 guest@<host>
+guest@worker:~$ test -n "$GH_TOKEN" && test -n "$GITHUB_TOKEN"
+guest@worker:~$ gh auth status >/dev/null
+guest@worker:~$ exit
+```
+
+Run the deterministic, synthetic-token precedence check from the repository:
+
+```bash
+./tests/ssh-github-auth.sh
+```
+
+For a Paperclip run with an explicit token, verify `gh auth status >/dev/null`
+inside that run. Both `GH_TOKEN` and `GITHUB_TOKEN` overrides win; when both are
+provided, GitHub CLI's normal `GH_TOKEN` preference applies.
+
+GitHub CLI's credential helper applies to HTTPS remotes. Existing checkouts
+whose origin is `git@github.com:OWNER/REPO.git` continue to use SSH keys and do
+not use this token. Switch only the affected repository to a credential-free
+HTTPS URL:
+
+```bash
+git remote set-url origin https://github.com/OWNER/REPO.git
+```
+
+Never add a token to that URL.
+
+### Rotation, rollback, and security
+
+To rotate the baseline, replace `SSH_GITHUB_TOKEN` in `.env` and recreate the
+service. To disable or roll back token projection, remove or empty the variable
+and recreate the service. Startup then removes the three managed entries from
+`~/.ssh/environment`, deleting the file only when no unrelated entries remain.
+Existing Paperclip-provided run tokens remain independent.
+
+The baseline is available to every process running as the SSH guest and is
+stored mode `0600` in the persisted guest home for OpenSSH to load. It is also
+present in the container's configured environment, so anyone with host Docker
+control can retrieve it. Treat Docker-host access and the guest account as
+trusted for the token's scope, use least privilege and expiry, protect `.env`
+with mode `0600`, and rotate the token after suspected exposure. Do not enable
+shell tracing around container startup or authentication commands.
 
 ## Included CLIs
 

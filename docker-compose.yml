@@ -11,6 +11,9 @@ services:
       SSH_USER: ${SSH_USER:-guest}
       SSH_UID: ${SSH_UID:-1000}
       SSH_GID: ${SSH_GID:-1000}
+      # Host-only baseline projected into guest SSH sessions as GH_TOKEN and
+      # GITHUB_TOKEN. Paperclip run env remains authoritative.
+      SSH_GITHUB_TOKEN: ${SSH_GITHUB_TOKEN:-}
       AUTHORIZED_KEYS_FILE: /run/authorized_keys
       WORKSPACE_DIR: /workspace
       ANTHROPIC_BASE_URL:

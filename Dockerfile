@@ -13,6 +13,7 @@ RUN chmod 755 /tmp/paperclip-tooling/*.sh \
     && /tmp/paperclip-tooling/install-tailscale.sh \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        gh \
         openssh-server \
         openssl \
         passwd \
@@ -22,9 +23,15 @@ RUN chmod 755 /tmp/paperclip-tooling/*.sh \
 
 ENV NODE_PATH=/usr/local/lib/node_modules
 
+RUN mkdir -p /usr/local/libexec
+
+COPY scripts/gh-with-token-precedence.sh /usr/local/bin/gh
+COPY scripts/project-ssh-github-env.sh /usr/local/libexec/project-ssh-github-env
 COPY entrypoint.sh /entrypoint.sh
 
-RUN chmod 755 /entrypoint.sh
+RUN chmod 755 /entrypoint.sh /usr/local/bin/gh /usr/local/libexec/project-ssh-github-env \
+    && git config --system credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential' \
+    && git config --system credential.https://gist.github.com.helper '!/usr/local/bin/gh auth git-credential'
 
 EXPOSE 22
 

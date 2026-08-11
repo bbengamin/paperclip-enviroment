@@ -50,6 +50,15 @@ chown -R "$SSH_UID:$SSH_GID" "$SSH_HOME"
 chmod 700 "$SSH_HOME/.ssh"
 chmod 600 "$SSH_HOME/.ssh/authorized_keys"
 
+# sshd does not inherit the Compose environment when UsePAM is disabled.
+# Project the host-only baseline into OpenSSH's per-user environment so both
+# interactive shells and one-shot commands receive it. The managed entries are
+# replaced or removed without disturbing unrelated user entries, preventing a
+# disabled or rotated baseline from lingering in the persisted guest-home volume.
+SSH_HOME="$SSH_HOME" SSH_UID="$SSH_UID" SSH_GID="$SSH_GID" \
+  SSH_GITHUB_TOKEN="${SSH_GITHUB_TOKEN:-}" \
+  /usr/local/libexec/project-ssh-github-env
+
 # Paperclip uses this directory as the remote runtime root for staged agent
 # workspaces. Keep it user-owned and independent from the environment repo.
 install -d -m 775 -o "$SSH_UID" -g "$SSH_GID" "$WORKSPACE_DIR"
@@ -132,6 +141,7 @@ ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers $SSH_USER
+PermitUserEnvironment GH_TOKEN,GITHUB_TOKEN,PAPERCLIP_SSH_GITHUB_TOKEN_SHA256
 X11Forwarding no
 PrintMotd no
 Subsystem sftp /usr/lib/openssh/sftp-server
