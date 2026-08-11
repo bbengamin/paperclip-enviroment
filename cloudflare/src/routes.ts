@@ -10,6 +10,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   resolveSandbox,
   applySandboxKeepAlive,
+  applySandboxPreviewHold,
   toErrorResponse,
   toJsonResponse,
   type BridgeEnv,
@@ -56,7 +57,59 @@ interface ExecuteRequestBody {
   sessionId?: string;
 }
 
-const PREVIEW_ROUTE_PREFIX = "/api/paperclip-sandbox/v1/preview/";
+
+// Bumped manually on behavior changes so the /health route can prove which
+// build is actually deployed (deploy drift has burned us before).
+const BRIDGE_VERSION = "0.4.1";
+
+// Preview hold: how long a retained (reuse) sandbox stays before it is allowed
+// to sleep after a run completes. Armed as the sandbox `sleepAfter` on release.
+const DEFAULT_PREVIEW_HOLD_SECONDS = 3600;
+const MIN_PREVIEW_HOLD_SECONDS = 60;
+
+function resolvePreviewHoldSeconds(env: BridgeEnv): number {
+  const raw = env.PREVIEW_HOLD_SECONDS?.trim();
+  if (!raw) return DEFAULT_PREVIEW_HOLD_SECONDS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PREVIEW_HOLD_SECONDS;
+  return Math.max(MIN_PREVIEW_HOLD_SECONDS, Math.trunc(parsed));
+}
+
+// The SDK's sleepAfter accepts duration strings; the codebase uses minute/hour
+// units ("10m", "1h"). Express the hold in whole minutes (>=1) so we only rely
+// on the "m" unit that is already exercised elsewhere.
+function previewHoldSleepAfter(seconds: number): string {
+  return `${Math.max(1, Math.round(seconds / 60))}m`;
+}
+
+// A brand-new sandbox container can come up wedged (rootless DIND boot crash,
+// tailscaled never ready). In that state every exec fails no matter how long
+// exec.ts re-polls the session watcher — the only recovery is a *fresh*
+// container. Under non-reuse the sandbox id carries a random suffix, so each
+// attempt below provisions a genuinely new container; under reuse the id is
+// deterministic and the retry just re-runs setup against the same sandbox.
+const ACQUIRE_SETUP_MAX_ATTEMPTS = 3;
+const ACQUIRE_SETUP_RETRY_DELAY_MS = 1_000;
+
+// Cold-start setup failures worth a fresh-sandbox retry: the SDK's
+// session-watcher ENOENT (surfaces after exec.ts's own retry budget is
+// exhausted), a setup utility exiting non-zero (daemon not up yet), or a
+// setup timeout. Deterministic configuration errors (missing Worker secret)
+// must fail immediately instead of burning retries.
+export function isColdStartSetupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  // Deterministic config error (Worker secret missing) — never retry. Match the
+  // SPECIFIC message, not the bare word: a cold-start ENOENT during `tailscale-up`
+  // echoes the whole command, which contains `TAILSCALE_AUTHKEY=…`, so a bare
+  // /TAILSCALE_AUTHKEY/ guard mis-classified the retryable boot race as config
+  // and skipped the recreate loop (the raw-ENOENT bug).
+  if (/TAILSCALE_AUTHKEY Worker secret is required/i.test(message)) return false;
+  return (
+    /ENOENT: no such file or directory, watch '\/tmp\/session-/i.test(message) ||
+    /failed with exit code/i.test(message) ||
+    /timed out/i.test(message)
+  );
+}
 
 const TAILSCALE_PROXY_ENV = {
   ALL_PROXY: "socks5://127.0.0.1:1055",
@@ -90,6 +143,22 @@ function withTailscaleProxyEnv(env: BridgeEnv, commandEnv?: Record<string, strin
   return next;
 }
 
+// Forward the authoritative preview signing inputs into the in-sandbox command
+// environment. The in-sandbox agent (via the `preview-handoff` skill) needs the
+// bridge's public origin, the canonical signing target, and the signing secret
+// to build a browser-clickable signed preview URL — but Worker vars/secrets do
+// not automatically appear inside the container, so the bridge must inject them
+// at exec time. These values are authoritative and override any same-named keys
+// the caller passed, which guarantees the signer secret always matches the
+// secret this same Worker verifies with (no two-copies drift).
+// Tell the in-sandbox agent it is on Cloudflare so the preview-handoff skill
+// opens a quick tunnel via `cloudflared` (the binary is baked into the image)
+// rather than trying to reach a signing/proxy endpoint. Previews are fully
+// agent-side now, so no base URL, target, or signing secret is injected.
+function withPreviewEnv(commandEnv?: Record<string, string>): Record<string, string> | undefined {
+  return { ...(commandEnv ?? {}), PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE: "cloudflare" };
+}
+
 function readBoolean(value: unknown, fallback: boolean): boolean {
   return value === undefined ? fallback : value === true;
 }
@@ -112,35 +181,6 @@ function readPort(value: string): number | null {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return null;
   return port;
-}
-
-function buildPreviewRequest(request: Request, url: URL, providerLeaseId: string, portSegment: string): Request | Response {
-  const port = readPort(portSegment);
-  if (port === null) {
-    return toErrorResponse(400, "invalid_request", "Preview port must be an integer from 1 to 65535.");
-  }
-
-  const routePrefix = `${PREVIEW_ROUTE_PREFIX}${encodeURIComponent(providerLeaseId)}/${portSegment}`;
-  const rawRemainder = url.pathname.startsWith(routePrefix)
-    ? url.pathname.slice(routePrefix.length)
-    : "";
-  const upstreamUrl = new URL(url.toString());
-  upstreamUrl.pathname = rawRemainder.length > 0 ? rawRemainder : "/";
-
-  const headers = new Headers(request.headers);
-  headers.delete("Authorization");
-  headers.delete("X-Paperclip-Environment-Id");
-  headers.delete("X-Paperclip-Issue-Id");
-  headers.set("X-Paperclip-Preview-Lease-Id", providerLeaseId);
-  headers.set("X-Paperclip-Preview-Port", String(port));
-
-  return new Request(upstreamUrl.toString(), {
-    method: request.method,
-    headers,
-    body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
-    redirect: "manual",
-    duplex: "half",
-  } as RequestInit & { duplex: "half" });
 }
 
 function requireTailscaleAuthKey(env: BridgeEnv): string {
@@ -186,7 +226,7 @@ async function execLeaseUtility(
     args,
     cwd,
     timeoutMs: options.timeoutMs,
-    sessionStrategy: options.sessionStrategy,
+    sessionStrategy: "default",
     sessionId: options.sessionId,
   });
 }
@@ -200,6 +240,31 @@ function requireZeroExit(action: string, result: { exitCode: number | null; time
       `${action} failed with exit code ${result.exitCode ?? "null"}${result.stderr.trim() ? `: ${result.stderr.trim()}` : ""}`,
     );
   }
+}
+
+// Warm the container's exec/session infra with a cheap idempotent no-op before
+// running real setup. `executeInSandbox` retries the cold-start session-watcher
+// race internally, so this absorbs the boot race here — on a command that
+// carries no secrets and is safe to re-run — instead of letting `tailscale-up`
+// (the old first command) take the brunt of it. Benefits: (1) the recreate loop
+// classifies a wedged boot correctly (the probe's error can't echo
+// TAILSCALE_AUTHKEY), and (2) a later `tailscale-up` failure is a *real*
+// tailscale failure, not a mis-attributed boot race.
+const READINESS_PROBE_TIMEOUT_MS = 60_000;
+
+async function ensureSandboxReady(
+  sandbox: CloudflareSandbox,
+  options: { sessionId: string; timeoutMs: number },
+) {
+  const result = await executeInSandbox({
+    sandbox,
+    command: "true",
+    cwd: "/",
+    timeoutMs: Math.min(options.timeoutMs, READINESS_PROBE_TIMEOUT_MS),
+    sessionStrategy: "default",
+    sessionId: options.sessionId,
+  });
+  requireZeroExit("sandbox readiness probe", result);
 }
 
 async function ensureTailscale(
@@ -219,7 +284,7 @@ async function ensureTailscale(
     command: "tailscale-up",
     cwd: "/",
     timeoutMs: input.timeoutMs,
-    sessionStrategy: input.sessionStrategy,
+    sessionStrategy: "default",
     sessionId: input.sessionId,
     env: {
       TAILSCALE_AUTHKEY: tailscaleAuthKey,
@@ -316,18 +381,22 @@ async function verifySentinel(
 }
 
 export async function handleBridgeRequest(request: Request, env: BridgeEnv): Promise<Response> {
-  if (!(await isAuthorizedRequest(request, env.BRIDGE_AUTH_TOKEN))) {
-    return toErrorResponse(401, "unauthorized", "Missing or invalid bridge bearer token.");
-  }
-
   const url = new URL(request.url);
   const pathname = url.pathname.replace(/\/+$/, "");
+
+  const isAuthorized = await isAuthorizedRequest(request, env.BRIDGE_AUTH_TOKEN);
+
+  // Every bridge route requires the bearer token. (Previews are opened by the
+  // in-sandbox agent via cloudflared, not through the bridge.)
+  if (!isAuthorized) {
+    return toErrorResponse(401, "unauthorized", "Missing or invalid bridge bearer token.");
+  }
 
   if (request.method === "GET" && pathname === "/api/paperclip-sandbox/v1/health") {
     return toJsonResponse({
       ok: true,
       provider: "cloudflare",
-      bridgeVersion: "0.1.0",
+      bridgeVersion: BRIDGE_VERSION,
       tailscaleRequired: true,
       tailscaleConfigured: Boolean(env.TAILSCALE_AUTHKEY?.trim()),
       capabilities: {
@@ -335,28 +404,13 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         namedSessions: true,
         dockerInDocker: true,
         dockerHostNetworkSmoke: true,
-        previewUrls: true,
+        previewAgentTunnels: true,
+        previewHoldSeconds: resolvePreviewHoldSeconds(env),
+        acquireColdStartRetry: true,
+        acquireReadinessGate: true,
+        acquireReuseColdStartRecreate: true,
       },
     });
-  }
-
-  if (pathname.startsWith(PREVIEW_ROUTE_PREFIX)) {
-    const suffix = pathname.slice(PREVIEW_ROUTE_PREFIX.length);
-    const [encodedProviderLeaseId, portSegment] = suffix.split("/", 2);
-    const providerLeaseId = decodeURIComponent(encodedProviderLeaseId ?? "");
-    if (!providerLeaseId || !portSegment) {
-      return toErrorResponse(400, "invalid_request", "Preview URL must include providerLeaseId and port.");
-    }
-
-    const previewRequest = buildPreviewRequest(request, url, providerLeaseId, portSegment);
-    if (previewRequest instanceof Response) return previewRequest;
-
-    const sandbox = await resolveSandbox(env, providerLeaseId, {
-      keepAlive: false,
-      sleepAfter: "10m",
-      normalizeId: true,
-    });
-    return await sandbox.containerFetch(previewRequest, readPort(portSegment)!);
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/probe") {
@@ -378,6 +432,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     const sandbox = await resolveSandbox(env, sandboxId, { keepAlive, sleepAfter, normalizeId });
     await applySandboxKeepAlive(sandbox, keepAlive);
     try {
+      await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
       await ensureTailscale(sandbox, env, { providerLeaseId: sandboxId, timeoutMs, sessionStrategy, sessionId });
       await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
       await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
@@ -418,56 +473,74 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     const sessionStrategy = readSessionStrategy(body.sessionStrategy);
     const sessionId = readString(body.sessionId, DEFAULT_SESSION_ID);
     const timeoutMs = readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS);
-    const providerLeaseId = buildLeaseSandboxId({
-      environmentId: body.environmentId,
-      runId: body.runId,
-      reuseLease,
-      normalizeId,
-      issueId: body.issueId ?? null,
-    });
-    const sandbox = await resolveSandbox(env, providerLeaseId, { keepAlive, sleepAfter, normalizeId });
-    // Guard against orphaning a keepAlive sandbox if workspace setup throws
-    // after creation: Paperclip never sees the lease ID in that case, so it
-    // can't clean up. Destroy here unless this is a reuseLease handshake
-    // (where the sandbox may have been created by a prior acquire and we
-    // shouldn't destroy it on a transient setup failure during reattachment).
-    try {
-      await applySandboxKeepAlive(sandbox, keepAlive);
-      await ensureTailscale(sandbox, env, { providerLeaseId, timeoutMs, sessionStrategy, sessionId });
-      await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
-      await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
-      await writeSentinel(sandbox, {
-        providerLeaseId,
-        remoteCwd,
-        sessionStrategy,
-        sessionId,
-        keepAlive,
-        sleepAfter,
-        normalizeId,
-        resumedLease: false,
-        timeoutMs,
-      });
-    } catch (err) {
-      if (!reuseLease) {
-        await sandbox.destroy().catch(() => undefined);
-      }
-      throw err;
-    }
 
-    return toJsonResponse({
-      providerLeaseId,
-      metadata: {
-        provider: "cloudflare",
-        remoteCwd,
-        sandboxId: providerLeaseId,
-        sessionStrategy,
-        sessionId,
-        keepAlive,
-        sleepAfter,
+    for (let attempt = 1; ; attempt += 1) {
+      // Non-reuse ids carry a fresh random suffix per attempt, so a retry
+      // provisions a genuinely new container instead of re-polling a wedged
+      // one. Reuse ids are deterministic — same sandbox every attempt.
+      const providerLeaseId = buildLeaseSandboxId({
+        environmentId: body.environmentId,
+        runId: body.runId,
+        reuseLease,
         normalizeId,
-        resumedLease: false,
-      },
-    });
+        issueId: body.issueId ?? null,
+      });
+      const sandbox = await resolveSandbox(env, providerLeaseId, { keepAlive, sleepAfter, normalizeId });
+      // On a setup failure we always tear down this sandbox before retrying —
+      // for reuse leases too. A healthy reattach re-runs setup idempotently and
+      // never enters the catch, so only a *broken* sandbox reaches it; and
+      // because a reuse id is deterministic, re-polling the same wedged
+      // container (e.g. the cold-start `/tmp/session-*` watch ENOENT) never
+      // recovers. Destroying lets the next attempt provision a genuinely fresh
+      // container under the same id. Its disk is ephemeral and was unreachable
+      // anyway, and Paperclip re-derives the deterministic id, so nothing leaks.
+      try {
+        await applySandboxKeepAlive(sandbox, keepAlive);
+        await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
+        await ensureTailscale(sandbox, env, { providerLeaseId, timeoutMs, sessionStrategy, sessionId });
+        await ensureDockerRuntime(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
+        await ensureWorkspace(sandbox, { remoteCwd, sessionStrategy, sessionId, timeoutMs });
+        await writeSentinel(sandbox, {
+          providerLeaseId,
+          remoteCwd,
+          sessionStrategy,
+          sessionId,
+          keepAlive,
+          sleepAfter,
+          normalizeId,
+          resumedLease: false,
+          timeoutMs,
+        });
+      } catch (err) {
+        await sandbox.destroy().catch(() => undefined);
+        if (!isColdStartSetupError(err)) throw err;
+        if (attempt >= ACQUIRE_SETUP_MAX_ATTEMPTS) {
+          const message = err instanceof Error ? err.message : String(err);
+          throw new Error(
+            `Cloudflare sandbox lease setup failed after ${attempt} cold-start attempts: ${message}`,
+            { cause: err },
+          );
+        }
+        await new Promise((resolve) => setTimeout(resolve, ACQUIRE_SETUP_RETRY_DELAY_MS));
+        continue;
+      }
+
+      return toJsonResponse({
+        providerLeaseId,
+        metadata: {
+          provider: "cloudflare",
+          remoteCwd,
+          sandboxId: providerLeaseId,
+          sessionStrategy,
+          sessionId,
+          keepAlive,
+          sleepAfter,
+          normalizeId,
+          resumedLease: false,
+          setupAttempts: attempt,
+        },
+      });
+    }
   }
 
   if (request.method === "POST" && pathname === "/api/paperclip-sandbox/v1/leases/resume") {
@@ -489,6 +562,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     // `getSandbox` is idempotent on the Sandbox SDK side (no new sandbox is
     // created), so a failed resume doesn't leak a *new* sandbox.
     await applySandboxKeepAlive(sandbox, keepAlive);
+    await ensureSandboxReady(sandbox, { sessionId, timeoutMs });
     await ensureTailscale(sandbox, env, {
       providerLeaseId: body.providerLeaseId,
       timeoutMs,
@@ -536,6 +610,23 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       return toJsonResponse({ ok: true });
     }
     if (readBoolean(body.reuseLease, false)) {
+      // Reuse: keep the sandbox (the operator wants to review the PR / preview),
+      // but arm the preview hold so it sleeps after the idle window instead of
+      // living forever under keepAlive. Sleeping scales it to zero (disk wiped,
+      // instance slot + billing freed); a later run on the same task renews
+      // activity and resets the timer. Best-effort: a failure here must not fail
+      // the release.
+      const holdSleepAfter = previewHoldSleepAfter(resolvePreviewHoldSeconds(env));
+      try {
+        const sandbox = await resolveSandbox(env, body.providerLeaseId, {
+          keepAlive: false,
+          sleepAfter: holdSleepAfter,
+          normalizeId: true,
+        });
+        await applySandboxPreviewHold(sandbox, holdSleepAfter);
+      } catch {
+        // Sandbox still exists; it may just live longer than the hold window.
+      }
       return toJsonResponse({ ok: true });
     }
     const sandbox = await resolveSandbox(env, body.providerLeaseId, {
@@ -586,6 +677,23 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
             sessionStrategy,
             sessionId,
           };
+          // Stream-delivery observability (visible via `wrangler tail` / Workers
+          // Logs): a live incident showed Codex output arriving as one ~187KB
+          // chunk ~5 minutes after exec start, i.e. buffered upstream of this
+          // Worker (container control plane / SDK), while every hop we own
+          // forwards immediately. These logs prove per-run where the first
+          // output actually surfaced in the Worker.
+          const execStartedAt = Date.now();
+          let firstOutputLogged = false;
+          let outputEvents = 0;
+          let outputBytes = 0;
+          console.log(JSON.stringify({
+            event: "bridge.exec.start",
+            providerLeaseId: body.providerLeaseId,
+            command: body.command,
+            sessionStrategy,
+            sessionId,
+          }));
           const sendEvent = (type: string, payload: unknown): boolean => {
             try {
               controller.enqueue(encoder.encode(encodeSseEvent(type, payload)));
@@ -616,19 +724,47 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
               command: body.command!,
               args: Array.isArray(body.args) ? body.args.filter((value): value is string => typeof value === "string") : [],
               cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-              env: withTailscaleProxyEnv(env, body.env),
+              env: withPreviewEnv(withTailscaleProxyEnv(env, body.env)),
               stdin: body.stdin ?? null,
               timeoutMs: readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS),
               sessionStrategy,
               sessionId,
               onOutput: async (streamName, data) => {
+                outputEvents += 1;
+                outputBytes += data.length;
+                if (!firstOutputLogged) {
+                  firstOutputLogged = true;
+                  console.log(JSON.stringify({
+                    event: "bridge.exec.first_output",
+                    providerLeaseId: body.providerLeaseId,
+                    stream: streamName,
+                    bytes: data.length,
+                    msSinceExecStart: Date.now() - execStartedAt,
+                  }));
+                }
                 if (!sendEvent(streamName, { data })) {
                   throw new Error("Cloudflare sandbox bridge SSE stream closed while forwarding output.");
                 }
               },
             });
+            console.log(JSON.stringify({
+              event: "bridge.exec.complete",
+              providerLeaseId: body.providerLeaseId,
+              exitCode: result.exitCode,
+              outputEvents,
+              outputBytes,
+              durationMs: Date.now() - execStartedAt,
+            }));
             sendTerminal("complete", { ...result, metadata: streamMetadata });
           } catch (error) {
+            console.log(JSON.stringify({
+              event: "bridge.exec.error",
+              providerLeaseId: body.providerLeaseId,
+              error: error instanceof Error ? error.message : String(error),
+              outputEvents,
+              outputBytes,
+              durationMs: Date.now() - execStartedAt,
+            }));
             sendTerminal("error", {
               error: error instanceof Error ? error.message : String(error),
               metadata: streamMetadata,
@@ -656,7 +792,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       command: body.command,
       args: Array.isArray(body.args) ? body.args.filter((value): value is string => typeof value === "string") : [],
       cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-      env: withTailscaleProxyEnv(env, body.env),
+      env: withPreviewEnv(withTailscaleProxyEnv(env, body.env)),
       stdin: body.stdin ?? null,
       timeoutMs: readInteger(body.timeoutMs, DEFAULT_TIMEOUT_MS),
       sessionStrategy,

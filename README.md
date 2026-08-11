@@ -81,8 +81,10 @@ If you change `SSH_USER` in `.env`, use that username instead.
 
 The classic SSH worker can provide a baseline GitHub token to every guest SSH
 session, including one-shot commands. This is useful for unattended clones,
-fetches, and pushes over HTTPS. Paperclip's project- or agent-level `GH_TOKEN`
-or `GITHUB_TOKEN` still takes precedence for managed runs.
+fetches, and pushes over HTTPS. The baseline is exposed as `GITHUB_TOKEN` only,
+so Paperclip's project- or agent-level `GH_TOKEN` or `GITHUB_TOKEN` naturally
+takes precedence for managed runs. When both runtime variables are present,
+GitHub CLI keeps its normal `GH_TOKEN` preference.
 
 ### Prerequisites and deployment
 
@@ -106,20 +108,18 @@ or `GITHUB_TOKEN` still takes precedence for managed runs.
    docker compose up -d --build --force-recreate ubuntu-ssh
    ```
 
-The entrypoint projects the secret into the guest SSH environment as both
-`GH_TOKEN` and `GITHUB_TOKEN`. It also records a one-way fingerprint so the
-installed `gh` launcher can honor a Paperclip run that overrides only
-`GITHUB_TOKEN`; the token itself is not written to Git credential files or Git
+The entrypoint projects the secret into the guest SSH environment as
+`GITHUB_TOKEN`. The token itself is not written to Git credential files or Git
 remote URLs. Git uses `gh auth git-credential` through system configuration.
 
 ### Verification
 
-Avoid commands such as `env`, `set`, `docker compose config`, or `echo
-$GH_TOKEN`, which can disclose the secret. Instead, verify presence and auth
-without printing it:
+Avoid commands such as `env`, `set`, `docker compose config`, `echo
+$GH_TOKEN`, or `echo $GITHUB_TOKEN`, which can disclose a credential. Instead,
+verify presence and auth without printing it:
 
 ```bash
-ssh -p 2222 guest@<host> 'test -n "$GH_TOKEN" && test -n "$GITHUB_TOKEN"'
+ssh -p 2222 guest@<host> 'test -n "$GITHUB_TOKEN"'
 ssh -p 2222 guest@<host> 'gh auth status >/dev/null'
 ssh -p 2222 guest@<host> 'git config --get-all credential.https://github.com.helper'
 ```
@@ -128,7 +128,7 @@ Verify an interactive shell separately, without displaying either value:
 
 ```console
 $ ssh -p 2222 guest@<host>
-guest@worker:~$ test -n "$GH_TOKEN" && test -n "$GITHUB_TOKEN"
+guest@worker:~$ test -n "$GITHUB_TOKEN"
 guest@worker:~$ gh auth status >/dev/null
 guest@worker:~$ exit
 ```
@@ -140,8 +140,8 @@ Run the deterministic, synthetic-token precedence check from the repository:
 ```
 
 For a Paperclip run with an explicit token, verify `gh auth status >/dev/null`
-inside that run. Both `GH_TOKEN` and `GITHUB_TOKEN` overrides win; when both are
-provided, GitHub CLI's normal `GH_TOKEN` preference applies.
+inside that run. An explicit `GITHUB_TOKEN` replaces the inherited baseline,
+while an explicit `GH_TOKEN` wins through GitHub CLI's normal precedence.
 
 GitHub CLI's credential helper applies to HTTPS remotes. Existing checkouts
 whose origin is `git@github.com:OWNER/REPO.git` continue to use SSH keys and do
@@ -158,8 +158,8 @@ Never add a token to that URL.
 
 To rotate the baseline, replace `SSH_GITHUB_TOKEN` in `.env` and recreate the
 service. To disable or roll back token projection, remove or empty the variable
-and recreate the service. Startup then removes the three managed entries from
-`~/.ssh/environment`, deleting the file only when no unrelated entries remain.
+and recreate the service. Startup then removes the managed `GITHUB_TOKEN` entry
+from `~/.ssh/environment`, deleting the file only when no unrelated entries remain.
 Existing Paperclip-provided run tokens remain independent.
 
 The baseline is available to every process running as the SSH guest and is
@@ -169,6 +169,106 @@ control can retrieve it. Treat Docker-host access and the guest account as
 trusted for the token's scope, use least privilege and expiry, protect `.env`
 with mode `0600`, and rotate the token after suspected exposure. Do not enable
 shell tracing around container startup or authentication commands.
+
+## Signed Preview Gateway
+
+The classic SSH environment also starts a small signed HTTP preview gateway for
+operator browser checks. Docker Compose publishes it on the same private
+`HOST_BIND_IP` used for SSH:
+
+```text
+http://<tailscale-name-or-ip>:3999/preview/<environmentId>/<port>/<path>?pc_issue=<issue>&pc_run=<run>&pc_exp=<unix>&pc_sig=<sig>
+```
+
+Set these values in `.env`:
+
+```bash
+PAPERCLIP_PREVIEW_GATEWAY_HOST_PORT=3999
+PAPERCLIP_PREVIEW_GATEWAY_ENABLED=1
+PAPERCLIP_PREVIEW_ENVIRONMENT_ID=<optional-stable-environment-id>
+PREVIEW_SIGNING_SECRET=<optional-boot-time-shared-preview-secret>
+PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE=/run/paperclip-preview/signing-secret
+PAPERCLIP_PREVIEW_ALLOWED_PORTS=3000,3001,4000,4200,5000,5173,5174,8000,8080,9000
+# Optional. Left unset, docker-compose derives it from HOST_BIND_IP + the
+# published gateway port.
+PAPERCLIP_PREVIEW_BASE_URL=<optional-public-origin-e.g-http://100.x.y.z:3999>
+```
+
+The gateway verifies `HMAC-SHA256` signatures using the shared
+`paperclip-preview-v1` canonical payload. It derives the target from the URL
+path, requires it to match the gateway's canonical target, rejects expired or
+invalid signatures before proxying, and forwards only HTTP requests to
+`127.0.0.1` on the configured allowed preview ports. The canonical target is
+published by:
+
+```text
+http://127.0.0.1:3999/.well-known/paperclip-preview
+```
+
+The metadata response includes `target`, `routePrefix`, and `baseUrl` (the
+operator-facing origin). Sign links against `baseUrl` + `routePrefix` and use
+the `target` value instead of guessing an environment id or a host.
+
+`PREVIEW_SIGNING_SECRET` is required for signed preview links. If it
+is missing, preview requests fail with `preview_signing_unavailable`, but SSH
+and unrelated agent task execution still start normally. Because Paperclip run
+secrets can arrive after the container and gateway process have already started,
+the gateway also reads the secret from
+`PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE` on every request. Agents can publish
+their run-time secret to that file and read gateway metadata with:
+
+```bash
+paperclip-preview-configure
+```
+
+This command uses the agent's `PREVIEW_SIGNING_SECRET`, writes it to the
+runtime secret file, and prints the `.well-known/paperclip-preview` metadata.
+It keeps the operator contract to one manually configured secret:
+`PREVIEW_SIGNING_SECRET`.
+
+The default allowed preview ports are:
+
+```text
+3000, 3001, 4000, 4200, 5000, 5173, 5174, 8000, 8080, 9000
+```
+
+Do not expose the preview gateway on a public interface. Keep `HOST_BIND_IP`
+set to the machine's Tailscale IP or another private operator-only interface.
+The gateway does not scan ports and does not proxy arbitrary hosts, SSH, Docker,
+database/admin ports, private files, or non-HTTP TCP services.
+
+Manual smoke path:
+
+1. Start an HTTP app inside the SSH environment on an allowed port, for example
+   `5173`.
+2. Generate a signed URL using the shared contract from `RL-1405` with
+   `target=<target from /.well-known/paperclip-preview>`, the task issue id,
+   run id, port, and expiry.
+3. Open the URL from a browser connected to the same Tailscale network.
+4. Confirm the app opens and that invalid, expired, wrong-target, and disallowed
+   port URLs are rejected.
+
+### Preview app supervisor (`paperclip-preview`)
+
+Both images install `paperclip-preview`, a small idempotent supervisor for the
+preview app process. It exists because agents often re-enter a warm environment
+— a persistent SSH container, or a reused/held Cloudflare sandbox — where a
+preview server they started earlier is still running; without a record, they
+waste steps rediscovering ports and killing stale listeners. It records the
+running app in a manifest (`/tmp/paperclip-preview.json`) so re-entry is a status
+check, not a hunt:
+
+```bash
+paperclip-preview status                 # is a preview already serving?
+paperclip-preview start --port 3001 -- npm run dev -- --host 0.0.0.0 --port 3001
+paperclip-preview stop
+```
+
+`start` adopts the port if it already serves HTTP; otherwise it launches the
+command detached (`setsid`/`nohup`) so it survives the run session, then waits
+for the port. On the persistent SSH environment the manifest persists with the
+container; on Cloudflare it lives on ephemeral disk and clears when the sandbox
+sleeps (which is fine — after sleep there is no app to reconcile).
 
 ## Included CLIs
 

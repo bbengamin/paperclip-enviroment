@@ -24,6 +24,41 @@ npx wrangler secret put TAILSCALE_HOSTNAME
 npx wrangler secret put TAILSCALE_EXTRA_ARGS
 ```
 
+Preview links need **no extra Worker secrets** — the in-sandbox agent opens a
+Cloudflare quick tunnel with the baked-in `cloudflared` (see "Preview links"
+below). `PREVIEW_SIGNING_SECRET` / `PAPERCLIP_PREVIEW_BASE_URL` are no longer
+required for Cloudflare previews.
+
+Optional preview hold tuning:
+
+```bash
+# Idle window (seconds) a reused preview sandbox is kept before it is allowed to
+# sleep after a run completes. Default 3600 (1h). On lease release the bridge
+# arms this as the sandbox `sleepAfter` (and drops keepAlive), so a held preview
+# sandbox scales to zero — disk wiped, instance slot + billing freed — after
+# this much inactivity instead of living forever. A later run on the same task
+# renews activity and resets the timer.
+npx wrangler secret put PREVIEW_HOLD_SECONDS   # or set as a plain var
+```
+
+Recommended env config for preview-heavy Cloudflare environments: **`reuseLease`
+on** (sandbox keyed per task, survives task completion for review) and
+**`keepAlive` on** (active runs never sleep mid-run). The bridge converts the
+sandbox to the bounded hold window on release regardless of the keepAlive toggle,
+so held sandboxes always self-clean.
+
+The bridge injects only `PAPERCLIP_PREVIEW_ENVIRONMENT_TYPE=cloudflare` into every
+`/exec` sandbox environment, so the `preview-handoff` skill knows to open a
+quick tunnel. Confirm the deploy exposes `bridgeVersion` >= `0.4.1` with
+`previewHoldSeconds`, `acquireReuseColdStartRecreate`, and `previewAgentTunnels`
+via `GET /health`.
+
+If a **reuse** lease hits a cold-start wedge during setup (e.g. the SDK's
+`/tmp/session-*` watch `ENOENT` race on a slept/re-acquired container), the
+acquire loop now tears the sandbox down and recreates it fresh under the same
+deterministic id instead of re-polling the wedge until the budget runs out. A
+healthy reattach re-runs setup idempotently and is unaffected.
+
 ## Deploy
 
 ```bash
@@ -75,38 +110,50 @@ build containers. If Cloudflare cannot resolve package repositories from inner
 Docker builds, the lease fails early instead of letting an agent discover the
 problem deep inside a project `docker compose up`.
 
-## Preview URLs
+## Preview links
 
-The deployed Worker URL is for the Paperclip bridge API. It does not affect
-Docker build or container egress.
+Agents produce browser-clickable preview links for the app running inside a
+sandbox (via the company `preview-handoff` skill). End-to-end flow:
 
-For future application previews on a `workers.dev` deployment, prefer
-`sandbox.tunnels.get(port)` because it creates a Cloudflare Tunnel URL without
-requiring wildcard DNS. Use `sandbox.exposePort(port, { hostname })` only after
-the bridge is deployed on a custom domain that supports wildcard preview
-hostnames.
+- **Per-task sandbox.** With `reuseLease` on, the sandbox is keyed by the issue
+  (`pc-env-<env>-i-<hash(issueId)>`), so the same task reuses its own sandbox
+  across runs while a different task gets a different one.
+- **Serving the app.** The `paperclip-preview` helper baked into the image starts
+  or adopts the app process idempotently and records it in a manifest, so a
+  re-entering agent reconciles state instead of hunting stale listeners. See the
+  root `README.md` "Preview app supervisor" section.
+- **1-hour hold.** When the task finishes, the reused sandbox is retained (not
+  destroyed) but switched to a bounded idle window (`PREVIEW_HOLD_SECONDS`,
+  default 1h) instead of living forever under keepAlive. The operator can review
+  the PR and open the live preview; a follow-up "make changes" run reattaches to
+  the same warm sandbox and resets the window. After the idle window the
+  container sleeps — on Cloudflare that scales it to zero and frees the instance
+  slot + billing. A later run then cold-starts a fresh sandbox and the agent
+  re-provisions from the branch.
 
-Images and containers created inside a Cloudflare sandbox are ephemeral and may
-be lost when the sandbox sleeps or is destroyed.
+- **Full pages via a per-preview origin (agent-run quick tunnel).** The agent
+  verifies the app port, then opens a Cloudflare **quick tunnel** by running
+  `cloudflared` directly in the container (`paperclip-preview tunnel --port <p>`,
+  which launches it detached and prints the `https://<random>.trycloudflare.com`
+  URL). It posts that URL. Because each preview is served on **its own origin**,
+  root-absolute assets (`/logo.webp`, `/_nuxt/...`) and in-app navigation "just
+  work," and **multiple concurrent previews across projects don't collide** — no
+  cookie, no same-origin proxy, no bridge round-trip.
+  - This runs `cloudflared` **in the container**, not via the SDK's
+    `sandbox.tunnels.*` — that API needs the RPC (capnweb) transport, and
+    switching a sandbox's transport mid-run would drop the agent's in-flight exec
+    (which is on the default HTTP transport). Running the binary directly avoids
+    that entirely. `cloudflared` is baked into the image (copied from the base),
+    and the helper forces `--protocol http2` since QUIC/UDP is often blocked.
 
-## Preview Proxy
-
-The bridge can proxy HTTP requests from the Worker to a running sandbox port:
-
-```text
-https://<bridge-host>/api/paperclip-sandbox/v1/preview/<providerLeaseId>/<port>/<path>
-```
-
-Example:
-
-```text
-https://paperclip-cloudflare-sandbox-bridge.example.workers.dev/api/paperclip-sandbox/v1/preview/pc-env-.../27451/
-```
-
-The preview proxy uses Cloudflare's container request forwarding rather than a
-public container IP. Requests must include the bridge bearer token; the bridge
-removes that `Authorization` header before forwarding the request to the
-sandboxed app.
+Cloudflare container disk is **ephemeral**: a sandbox cannot sleep and wake with
+its workspace or app process intact — the next start has a fresh disk from the
+image. The quick tunnel is a `cloudflared` process **inside** the container, so
+it dies when the sandbox sleeps at the end of the preview hold (≈1h). The tunnel
+URL is an **unauthenticated public capability** (unguessable, bounded to the hold
+window) — no login required. For authenticated preview URLs, use `exposePort` +
+a custom domain with wildcard DNS (a future step). The deployed Worker URL is the
+Paperclip bridge API and is **not** involved in serving previews.
 
 ## GitHub Actions Deployment
 

@@ -63,6 +63,13 @@ SSH_HOME="$SSH_HOME" SSH_UID="$SSH_UID" SSH_GID="$SSH_GID" \
 # workspaces. Keep it user-owned and independent from the environment repo.
 install -d -m 775 -o "$SSH_UID" -g "$SSH_GID" "$WORKSPACE_DIR"
 
+# The preview gateway starts with the container, but Paperclip run secrets can
+# arrive later in the agent shell. Let the SSH user publish the run-time signing
+# secret to a narrow file that the root-owned gateway can read per request.
+PREVIEW_SECRET_FILE="${PAPERCLIP_PREVIEW_SIGNING_SECRET_FILE:-/run/paperclip-preview/signing-secret}"
+PREVIEW_SECRET_DIR="$(dirname "$PREVIEW_SECRET_FILE")"
+install -d -m 700 -o "$SSH_UID" -g "$SSH_GID" "$PREVIEW_SECRET_DIR"
+
 # --- Docker-in-Docker (rootless) -------------------------------------------
 # Give the SSH user an isolated, self-owned Docker daemon instead of sharing
 # the host socket. Each environment runs its own rootless dockerd, so workers
@@ -116,6 +123,14 @@ elif [ "$DOCKER_RUNTIME" = "rootless" ]; then
   echo "DOCKER_RUNTIME=rootless but dockerd-rootless.sh is not installed; skipping Docker startup" >&2
 fi
 
+# --- Paperclip signed preview gateway --------------------------------------
+# The gateway is intentionally non-fatal: missing signing config disables usable
+# signed previews but must not prevent SSH/task execution from starting.
+if [ "${PAPERCLIP_PREVIEW_GATEWAY_ENABLED:-1}" = "1" ]; then
+  echo "starting Paperclip preview gateway on port ${PAPERCLIP_PREVIEW_GATEWAY_PORT:-3999}" >&2
+  node /usr/local/bin/paperclip-preview-gateway.mjs >/var/log/paperclip-preview-gateway.log 2>&1 &
+fi
+
 mkdir -p "$HOST_KEYS_DIR"
 chmod 700 "$HOST_KEYS_DIR"
 
@@ -141,7 +156,7 @@ ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin no
 AllowUsers $SSH_USER
-PermitUserEnvironment GH_TOKEN,GITHUB_TOKEN,PAPERCLIP_SSH_GITHUB_TOKEN_SHA256
+PermitUserEnvironment GITHUB_TOKEN
 X11Forwarding no
 PrintMotd no
 Subsystem sftp /usr/lib/openssh/sftp-server

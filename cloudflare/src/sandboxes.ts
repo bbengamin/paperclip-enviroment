@@ -5,6 +5,21 @@ import { buildLeaseSandboxId, buildSentinelPath, isTimeoutError } from "./helper
 export interface BridgeEnv {
   Sandbox: DurableObjectNamespace<CloudflareSandbox>;
   BRIDGE_AUTH_TOKEN?: string;
+  PREVIEW_SIGNING_SECRET?: string;
+  // Operator-configured public origin of this bridge (e.g.
+  // "https://paperclip-cloudflare-sandbox-bridge.<acct>.workers.dev"). Set as a
+  // Worker var/secret. The bridge forwards it into every /exec sandbox env so
+  // the in-sandbox agent can build a signed preview URL against the real bridge
+  // host instead of guessing (Worker vars do not cross into the container by
+  // themselves).
+  PAPERCLIP_PREVIEW_BASE_URL?: string;
+  // Idle window (seconds) a reused/preview sandbox is kept before it is allowed
+  // to sleep after a run completes. On release the bridge arms this as the
+  // sandbox `sleepAfter`, so a held preview sandbox scales to zero (disk wiped,
+  // instance slot + billing freed) after this much inactivity instead of living
+  // forever under keepAlive. Any later run on the same task renews activity and
+  // resets the timer. Default 3600 (1h). See applySandboxPreviewHold.
+  PREVIEW_HOLD_SECONDS?: string;
   TAILSCALE_AUTHKEY?: string;
   TAILSCALE_HOSTNAME?: string;
   TAILSCALE_EXTRA_ARGS?: string;
@@ -55,6 +70,20 @@ export async function applySandboxKeepAlive(
   keepAlive: boolean,
 ): Promise<void> {
   await sandbox.setKeepAlive(keepAlive);
+}
+
+// Arm the preview hold on a retained (reuse) sandbox: stop keeping it alive and
+// let it sleep after `sleepAfter` of inactivity. A slept container scales to
+// zero — its disk is wiped and its instance slot + billing are freed — which is
+// exactly the bounded "hold the preview for a while, then auto-clean" behavior
+// we want, handled natively by the platform. Ordering: drop keepAlive first so
+// the freshly-set sleepAfter is actually honored.
+export async function applySandboxPreviewHold(
+  sandbox: CloudflareSandbox,
+  sleepAfter: string,
+): Promise<void> {
+  await sandbox.setKeepAlive(false);
+  await sandbox.setSleepAfter(sleepAfter);
 }
 
 export { buildLeaseSandboxId, buildSentinelPath, isTimeoutError };

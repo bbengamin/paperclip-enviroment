@@ -16,7 +16,7 @@ if [ -e "$environment_file" ] || [ -L "$environment_file" ]; then
     echo "refusing to update unsafe SSH environment path: $environment_file" >&2
     exit 1
   fi
-  grep -Ev '^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_SSH_GITHUB_TOKEN_SHA256)=' \
+  grep -Ev '^GITHUB_TOKEN=' \
     "$environment_file" >"$environment_tmp" || true
 fi
 
@@ -28,12 +28,7 @@ if [ -n "$token" ]; then
       ;;
   esac
 
-  token_sha256="$(printf '%s' "$token" | sha256sum | cut -d ' ' -f 1)"
-  {
-    printf 'GH_TOKEN=%s\n' "$token"
-    printf 'GITHUB_TOKEN=%s\n' "$token"
-    printf 'PAPERCLIP_SSH_GITHUB_TOKEN_SHA256=%s\n' "$token_sha256"
-  } >>"$environment_tmp"
+  printf 'GITHUB_TOKEN=%s\n' "$token" >>"$environment_tmp"
 fi
 
 if [ -s "$environment_tmp" ]; then
