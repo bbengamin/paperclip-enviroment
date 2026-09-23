@@ -45,7 +45,7 @@ This container gives remote users shell access to an Ubuntu 24.04 container on t
 - exposes container SSH on host port `2222`, bound to the Tailscale IP only
 - provides `/workspace` as a dedicated Paperclip runtime volume
 - mounts this environment repo at `/environment` as read-only reference material
-- includes `claude`, `codex`, and `opencode` CLIs in the image
+- includes `claude`, `codex`, `opencode`, and `composio` CLIs in the image
 - includes GitHub CLI with token-backed HTTPS Git authentication for SSH sessions
 - includes Playwright with Chromium preinstalled for browserless testing
 
@@ -278,6 +278,7 @@ These are installed globally and available in the shell:
 node --version
 npm --version
 claude --version
+composio --version
 codex --version
 opencode --version
 playwright --version

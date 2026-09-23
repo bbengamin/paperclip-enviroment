@@ -5,12 +5,13 @@ ENV NPM_CONFIG_PREFIX=/usr/local
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY tooling/apps.env /tmp/paperclip-tooling/apps.env
-COPY scripts/install-common-tools.sh scripts/install-docker-tools.sh scripts/install-tailscale.sh /tmp/paperclip-tooling/
+COPY scripts/install-common-tools.sh scripts/install-docker-tools.sh scripts/install-tailscale.sh scripts/install-composio.sh /tmp/paperclip-tooling/
 
 RUN chmod 755 /tmp/paperclip-tooling/*.sh \
     && INSTALL_APT_NPM=1 /tmp/paperclip-tooling/install-common-tools.sh \
     && INCLUDE_DOCKER_DAEMON=1 /tmp/paperclip-tooling/install-docker-tools.sh \
     && /tmp/paperclip-tooling/install-tailscale.sh \
+    && /tmp/paperclip-tooling/install-composio.sh \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         gh \

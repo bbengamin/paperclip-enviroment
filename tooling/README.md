@@ -16,6 +16,7 @@ Both deployment modes consume it through the installer scripts in `scripts/`.
 | Docker Buildx | yes | yes | Docker apt repository stable channel / `docker:dind-rootless` | Image builds | `scripts/install-docker-tools.sh`, `cloudflare/Dockerfile` |
 | Rootless dockerd | yes | yes | Docker apt repository stable channel / `docker:dind-rootless` | Isolated Docker daemon for agent workloads | `scripts/install-docker-tools.sh`, `entrypoint.sh`, `cloudflare/boot-docker-for-dind.sh` |
 | Tailscale | yes | yes | Tailscale apt repository stable channel / Alpine package | Tailnet/private provider access | `scripts/install-tailscale.sh`, `cloudflare/scripts/install-cloudflare-dind-tools.sh` |
+| Composio CLI | yes | no | Latest stable release at image build time (`COMPOSIO_CLI_VERSION`) | Connected-app tool discovery and execution for agents | `tooling/apps.env`, `scripts/install-composio.sh`, `Dockerfile` |
 
 Both deployment modes provide rootless Docker for agent workloads. The classic
 Docker deployment starts rootless dockerd from `entrypoint.sh`; the Cloudflare

@@ -23,6 +23,7 @@ PACKAGES=(
   coreutils
   curl
   findutils
+  unzip
   git
   iproute2
   nano
