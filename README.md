@@ -383,6 +383,12 @@ Daemon startup is **non-fatal**: if Docker can't start on a given host, SSH
 access still comes up. Check `/var/log/dockerd-rootless.log` in the container to
 diagnose.
 
+The runtime directory `/run/user/<uid>` sits in the container's writable layer,
+so it survives `docker restart` and host power loss. The entrypoint empties it
+before starting the daemon. Otherwise a stale `docker.pid` whose PID now belongs
+to another process makes dockerd refuse to start. `./tests/rootless-docker-restart.sh`
+covers this on a host that allows privileged containers.
+
 ### Verify from inside the container
 
 ```bash

@@ -89,6 +89,12 @@ if [ "$DOCKER_RUNTIME" = "rootless" ] && command -v dockerd-rootless.sh >/dev/nu
   fi
 
   install -d -m 700 -o "$SSH_UID" -g "$SSH_GID" "$DOCKER_RUN_DIR"
+  # The runtime dir lives in the container's writable layer, so it survives
+  # `docker restart` and host power loss. Nothing runs as the SSH user yet, so
+  # its contents are stale: a leftover docker.pid whose PID now belongs to
+  # another process makes dockerd refuse to start.
+  find "$DOCKER_RUN_DIR" -mindepth 1 -delete \
+    || echo "could not clear stale ${DOCKER_RUN_DIR}; rootless dockerd may fail to start" >&2
   install -d -m 700 -o "$SSH_UID" -g "$SSH_GID" "$SSH_HOME/.local/share/docker"
 
   # sshd does not inherit this process's environment (and UsePAM is off, so
